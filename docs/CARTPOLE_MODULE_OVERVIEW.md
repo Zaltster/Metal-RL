@@ -20,6 +20,7 @@ The reusable cartpole code lives in:
 - [RolloutStorage.swift](/Users/smile/pufer/Environment/src/rl/storage/RolloutStorage.swift)
 - [GAE.swift](/Users/smile/pufer/Environment/src/rl/postprocess/GAE.swift)
 - [PPOLoss.swift](/Users/smile/pufer/Environment/src/rl/losses/PPOLoss.swift)
+- [CPUActorCriticUpdate.swift](/Users/smile/pufer/Environment/src/rl/train/CPUActorCriticUpdate.swift)
 - [CartPoleTypes.swift](/Users/smile/pufer/Environment/src/envs/cartpole/CartPoleTypes.swift)
 - [CartPoleReference.swift](/Users/smile/pufer/Environment/src/envs/cartpole/CartPoleReference.swift)
 - [CartPoleMetalEnvironment.swift](/Users/smile/pufer/Environment/src/envs/cartpole/CartPoleMetalEnvironment.swift)
@@ -165,6 +166,61 @@ This is still host-side and validation-first. Its current job is to prove that:
 - current-policy re-evaluation on stored observations/actions is coherent
 - clipped PPO objective math is correct
 - CPU and GPU fixed policies agree on the resulting loss values
+
+## CPU Backward Step
+
+There is now also a first manual training-step module:
+
+- `PPOBatch`
+- `TrainableMLPActorCritic`
+- `applySGDStep(...)`
+- `makePPOBatch(...)`
+
+This is intentionally narrow. It exists to prove that:
+
+- the current actor-critic forward path is differentiable in practice
+- hand-derived gradients are coherent
+- a simple SGD step changes parameters
+- a simple Adam step changes parameters
+- the loss can be reduced on both a synthetic PPO batch and a real stored rollout batch
+
+## CPU Training Loop
+
+There is now also a first repeated training-loop module:
+
+- `CPUTrainingLoopConfig`
+- `CPUTrainingIterationSummary`
+- `CPUTrainingRunSummary`
+- `runCPUTrainingLoop(...)`
+
+This remains intentionally narrow. Its current job is to prove that:
+
+- rollout collection, GAE, PPO loss, and SGD updates can be chained repeatedly
+- rollout collection, GAE, PPO loss, and Adam updates can be chained repeatedly
+- the training loop is deterministic under a fixed reset-seed schedule
+- deterministic minibatch shuffling can be introduced without breaking replay
+- a changed seed produces a different training trace
+- repeated updates move parameters without breaking the validated environment path
+
+## Hybrid GPU Rollout Loop
+
+There is now also a first hybrid training path:
+
+- `runHybridTrainingLoop(...)`
+- `MetalMLPPolicy.load(model:)`
+- standalone demo entrypoint in `train-cartpole-demo/`
+
+This path keeps:
+
+- environment stepping on the GPU
+- policy/value rollout inference on the GPU
+- PPO/GAE/update math on the CPU
+
+Its current job is to prove that:
+
+- trainable CPU weights can be synchronized into the Metal policy
+- rollout collection can stay GPU-first during training
+- the hybrid loop is still deterministic under fixed seeds
 
 ## Validation Harness
 

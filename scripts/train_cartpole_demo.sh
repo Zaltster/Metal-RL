@@ -1,8 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/../../" && pwd)"
-PROJECT_DIR="$ROOT_DIR/metal-smoke-check"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="$ROOT_DIR/train-cartpole-demo"
 BUILD_DIR="$PROJECT_DIR/.build"
 SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
 
@@ -30,6 +30,6 @@ swiftc \
   "$ROOT_DIR/src/rl/train/CPUTrainingLoop.swift" \
   "$ROOT_DIR/src/rl/train/HybridTrainingLoop.swift" \
   "$PROJECT_DIR/Sources/main.swift" \
-  -o "$BUILD_DIR/cartpole-validation"
+  -o "$BUILD_DIR/train-cartpole-demo"
 
-METAL_SMOKE_ROOT="$ROOT_DIR" "$BUILD_DIR/cartpole-validation"
+METAL_SMOKE_ROOT="$ROOT_DIR" "$BUILD_DIR/train-cartpole-demo"

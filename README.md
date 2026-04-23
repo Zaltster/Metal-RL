@@ -35,14 +35,17 @@ What is implemented:
 - actor-critic-style rollout storage with value predictions
 - host-side GAE computation with synthetic and rollout-backed validation
 - host-side PPO loss computation with synthetic and rollout-backed validation
+- hand-derived CPU backward/update step for the fixed actor-critic MLP
+- deterministic repeated CPU-side PPO training loop over the GPU cartpole environment with seeded minibatch shuffling and Adam
+- deterministic hybrid training loop with GPU rollouts and CPU Adam updates
 - host-side rollout storage with explicit indexing helpers
 
 What is not implemented yet:
 
 - learned neural network training
 - policy sampling with a learned stochastic policy
-- backpropagation
-- optimizer updates
+- GPU-side backpropagation
+- optimizer updates beyond the current CPU-side SGD/Adam path
 - end-to-end training
 
 ## Project Structure
@@ -63,6 +66,12 @@ What is not implemented yet:
   Host-side trajectory postprocessing such as GAE.
 - `src/rl/losses/`
   Host-side PPO loss computation.
+- `src/rl/train/`
+  CPU-side hand-derived backward/update step, repeated epoch/minibatch training loop, and hybrid GPU-rollout training loop for the fixed MLP actor-critic.
+- `train-cartpole-demo/`
+  Small standalone end-to-end training entrypoint.
+- `scripts/train_cartpole_demo.sh`
+  Builds and runs the training demo executable.
 - `metal-smoke-check/`
   Deterministic validation harness used to verify the stack end to end.
 - `docs/`
@@ -88,6 +97,10 @@ The current harness checks:
 - CPU/GPU GAE parity on stored actor-critic rollouts
 - synthetic PPO loss correctness
 - CPU/GPU PPO loss parity on stored actor-critic rollouts
+- synthetic backward-step loss reduction
+- real stored-rollout backward-step loss reduction
+- deterministic CPU training-loop replay
+- deterministic hybrid GPU-rollout training-loop replay
 - rollout storage replay
 
 ## Run
@@ -115,7 +128,7 @@ Expected output includes lines like:
 The next major phase is learned-model work:
 
 1. learned policy forward pass on GPU
-2. optimization and backward/update logic
+2. move backward/update logic beyond the current CPU-only SGD path
 3. end-to-end training
 4. broader environment/model scaling
 

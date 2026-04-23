@@ -150,6 +150,46 @@ final class MetalMLPPolicy: VectorActorCriticPolicy {
         writeValue(&self.params, to: paramsBuffer)
     }
 
+    func load(policy: MLPPolicy) throws {
+        let hiddenDim = Int(params.hiddenDim)
+        if policy.inputBias.count != hiddenDim {
+            throw EnvProjectError.validationFailed(
+                message: "MetalMLPPolicy load hidden-dim mismatch: expected \(hiddenDim), got \(policy.inputBias.count)."
+            )
+        }
+        if policy.inputWeights.count != observationSpec.elementsPerEnv * hiddenDim {
+            throw EnvProjectError.validationFailed(
+                message: "MetalMLPPolicy load input-weight size mismatch."
+            )
+        }
+        if policy.outputWeights.count != actionSpec.dimensionsPerEnv * hiddenDim {
+            throw EnvProjectError.validationFailed(
+                message: "MetalMLPPolicy load output-weight size mismatch."
+            )
+        }
+        if policy.outputBias.count != actionSpec.dimensionsPerEnv {
+            throw EnvProjectError.validationFailed(
+                message: "MetalMLPPolicy load output-bias size mismatch."
+            )
+        }
+        if policy.valueWeights.count != hiddenDim {
+            throw EnvProjectError.validationFailed(
+                message: "MetalMLPPolicy load value-weight size mismatch."
+            )
+        }
+
+        copyArray(policy.inputWeights, to: inputWeightBuffer)
+        copyArray(policy.inputBias, to: inputBiasBuffer)
+        copyArray(policy.outputWeights, to: outputWeightBuffer)
+        copyArray(policy.outputBias, to: outputBiasBuffer)
+        copyArray(policy.valueWeights, to: valueWeightBuffer)
+        copyArray([policy.valueBias], to: valueBiasBuffer)
+    }
+
+    func load(model: TrainableMLPActorCritic) throws {
+        try load(policy: model.asPolicy())
+    }
+
     func evaluate(
         for observations: [Float],
         envCount: Int,

@@ -317,6 +317,77 @@ func comparePPOLosses(lhs: PPOLossBreakdown, rhs: PPOLossBreakdown, tolerance: F
     try check("meanRatio", lhs.meanRatio, rhs.meanRatio)
 }
 
+func compareTrainingRuns(lhs: CPUTrainingRunSummary, rhs: CPUTrainingRunSummary, tolerance: Float, context: String) throws {
+    if lhs.iterations.count != rhs.iterations.count {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) training iteration-count mismatch: expected \(lhs.iterations.count), got \(rhs.iterations.count)."
+        )
+    }
+
+    func check(_ name: String, _ expected: Float, _ actual: Float, iteration: Int?) throws {
+        if abs(expected - actual) > tolerance {
+            throw EnvProjectError.validationFailed(
+                message: "\(context) \(name) mismatch\(iteration.map { " at iteration \($0)" } ?? ""): expected \(expected), got \(actual)."
+            )
+        }
+    }
+
+    try check("totalParameterDeltaL1", lhs.totalParameterDeltaL1, rhs.totalParameterDeltaL1, iteration: nil)
+
+    for index in lhs.iterations.indices {
+        let left = lhs.iterations[index]
+        let right = rhs.iterations[index]
+
+        if left.iteration != right.iteration || left.doneCount != right.doneCount {
+            throw EnvProjectError.validationFailed(message: "\(context) discrete training summary mismatch at iteration \(index).")
+        }
+
+        try check("meanReward", left.meanReward, right.meanReward, iteration: index)
+        try check("parameterDeltaL1", left.parameterDeltaL1, right.parameterDeltaL1, iteration: index)
+        try comparePPOLosses(lhs: left.preLoss, rhs: right.preLoss, tolerance: tolerance, context: "\(context) preLoss iteration \(index)")
+        try comparePPOLosses(lhs: left.postLoss, rhs: right.postLoss, tolerance: tolerance, context: "\(context) postLoss iteration \(index)")
+    }
+}
+
+func ensureDifferentTrainingRuns(lhs: CPUTrainingRunSummary, rhs: CPUTrainingRunSummary, tolerance: Float, context: String) throws {
+    if abs(lhs.totalParameterDeltaL1 - rhs.totalParameterDeltaL1) > tolerance {
+        return
+    }
+
+    for index in lhs.iterations.indices {
+        let left = lhs.iterations[index]
+        let right = rhs.iterations[index]
+
+        if abs(left.meanReward - right.meanReward) > tolerance ||
+            abs(left.postLoss.totalLoss - right.postLoss.totalLoss) > tolerance ||
+            left.doneCount != right.doneCount {
+            return
+        }
+    }
+
+    throw EnvProjectError.validationFailed(message: "\(context) produced no observable change.")
+}
+
+func validateTrainingRun(summary: CPUTrainingRunSummary, tolerance: Float, context: String) throws {
+    if summary.iterations.isEmpty {
+        throw EnvProjectError.validationFailed(message: "\(context) produced no iteration summaries.")
+    }
+    if summary.totalParameterDeltaL1 <= tolerance {
+        throw EnvProjectError.validationFailed(message: "\(context) produced no parameter movement.")
+    }
+
+    for iteration in summary.iterations {
+        if !iteration.meanReward.isFinite ||
+            !iteration.preLoss.totalLoss.isFinite ||
+            !iteration.postLoss.totalLoss.isFinite {
+            throw EnvProjectError.validationFailed(message: "\(context) produced non-finite training metrics at iteration \(iteration.iteration).")
+        }
+        if iteration.parameterDeltaL1 <= tolerance {
+            throw EnvProjectError.validationFailed(message: "\(context) produced no update at iteration \(iteration.iteration).")
+        }
+    }
+}
+
 func validatePPOSyntheticCase(tolerance: Float) throws {
     let config = PPOConfig(clipEpsilon: 0.2, valueCoefficient: 0.5, entropyCoefficient: 0.01)
     let result = try computePPOLoss(
@@ -338,6 +409,167 @@ func validatePPOSyntheticCase(tolerance: Float) throws {
         meanRatio: 0.85
     )
     try comparePPOLosses(lhs: expected, rhs: result, tolerance: tolerance, context: "PPO synthetic case")
+}
+
+func validateSyntheticBackwardStep(
+    basePolicy: MLPPolicy,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    tolerance: Float
+) throws {
+    var model = TrainableMLPActorCritic(policy: basePolicy)
+    let observations: [Float] = [
+        0.20, -0.10, 0.05, 0.30,
+        -0.15, 0.25, -0.20, 0.10,
+    ]
+    let initialEval = try model.evaluateGaussian(
+        for: observations,
+        taking: nil,
+        envCount: 2,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let actions: [Float] = [
+        initialEval.actionMeans[0] + 0.18,
+        initialEval.actionMeans[1] - 0.16,
+    ]
+    let oldEval = try model.evaluateGaussian(
+        for: observations,
+        taking: actions,
+        envCount: 2,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let batch = try PPOBatch(
+        sampleCount: 2,
+        observationDim: observationSpec.elementsPerEnv,
+        actionDim: actionSpec.dimensionsPerEnv,
+        observations: observations,
+        actions: actions,
+        oldLogProbs: oldEval.logProbs,
+        advantages: [1.0, -0.8],
+        returns: [oldEval.values[0] + 0.6, oldEval.values[1] - 0.4]
+    )
+
+    let summary = try model.applySGDStep(
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: SGDConfig(learningRate: 0.02)
+    )
+
+    if summary.parameterDeltaL1 <= tolerance {
+        throw EnvProjectError.validationFailed(message: "Synthetic backward step produced no parameter update.")
+    }
+    if summary.postLoss.totalLoss >= summary.preLoss.totalLoss {
+        throw EnvProjectError.validationFailed(
+            message: "Synthetic backward step did not reduce total loss: before \(summary.preLoss.totalLoss), after \(summary.postLoss.totalLoss)."
+        )
+    }
+}
+
+func validateSyntheticAdamStep(
+    basePolicy: MLPPolicy,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    tolerance: Float
+) throws {
+    var model = TrainableMLPActorCritic(policy: basePolicy)
+    let observations: [Float] = [
+        -0.22, 0.14, -0.08, 0.19,
+        0.11, -0.18, 0.26, -0.07,
+    ]
+    let initialEval = try model.evaluateGaussian(
+        for: observations,
+        taking: nil,
+        envCount: 2,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let actions: [Float] = [
+        initialEval.actionMeans[0] - 0.12,
+        initialEval.actionMeans[1] + 0.15,
+    ]
+    let oldEval = try model.evaluateGaussian(
+        for: observations,
+        taking: actions,
+        envCount: 2,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let batch = try PPOBatch(
+        sampleCount: 2,
+        observationDim: observationSpec.elementsPerEnv,
+        actionDim: actionSpec.dimensionsPerEnv,
+        observations: observations,
+        actions: actions,
+        oldLogProbs: oldEval.logProbs,
+        advantages: [0.9, -0.7],
+        returns: [oldEval.values[0] + 0.5, oldEval.values[1] - 0.3]
+    )
+    var adamState = AdamState(model: model)
+    let summary = try model.applyAdamStep(
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        adamState: &adamState,
+        adamConfig: AdamConfig(learningRate: 0.01, beta1: 0.9, beta2: 0.999, epsilon: 1e-8)
+    )
+
+    if summary.parameterDeltaL1 <= tolerance {
+        throw EnvProjectError.validationFailed(message: "Synthetic Adam step produced no parameter update.")
+    }
+    if summary.postLoss.totalLoss >= summary.preLoss.totalLoss {
+        throw EnvProjectError.validationFailed(
+            message: "Synthetic Adam step did not reduce total loss: before \(summary.preLoss.totalLoss), after \(summary.postLoss.totalLoss)."
+        )
+    }
+}
+
+func validateRealBackwardStep(
+    basePolicy: MLPPolicy,
+    storage: VectorRolloutStorage,
+    estimates: AdvantageEstimates,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    tolerance: Float
+) throws {
+    var model = TrainableMLPActorCritic(policy: basePolicy)
+    let batch = try makePPOBatch(storage: storage, estimates: estimates)
+    var firstSummary: TrainStepSummary?
+    var finalSummary: TrainStepSummary?
+
+    for _ in 0..<5 {
+        let summary = try model.applySGDStep(
+            batch: batch,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec,
+            ppoConfig: ppoConfig,
+            sgdConfig: SGDConfig(learningRate: 0.001)
+        )
+        if firstSummary == nil {
+            firstSummary = summary
+        }
+        finalSummary = summary
+    }
+
+    guard let firstSummary, let finalSummary else {
+        throw EnvProjectError.validationFailed(message: "Real backward validation did not execute any SGD steps.")
+    }
+
+    if firstSummary.parameterDeltaL1 <= tolerance {
+        throw EnvProjectError.validationFailed(message: "Real backward step produced no parameter update.")
+    }
+    if finalSummary.postLoss.totalLoss >= firstSummary.preLoss.totalLoss {
+        throw EnvProjectError.validationFailed(
+            message: "Real backward steps did not reduce total loss: before \(firstSummary.preLoss.totalLoss), after \(finalSummary.postLoss.totalLoss)."
+        )
+    }
 }
 
 func validateStorageAgainstRollout(storage: VectorRolloutStorage, rollout: VectorRollout, tolerance: Float, context: String) throws {
@@ -655,6 +887,20 @@ func runValidationHarness() throws {
         envCount: count,
         observationSpec: driver.observationSpec,
         actionSpec: driver.actionSpec
+    )
+    try validateSyntheticBackwardStep(
+        basePolicy: mlpPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        tolerance: tolerance
+    )
+    try validateSyntheticAdamStep(
+        basePolicy: mlpPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        tolerance: tolerance
     )
 
     let baseline = try runValidatedRollout(
@@ -1023,6 +1269,119 @@ func runValidationHarness() throws {
         throw EnvProjectError.validationFailed(message: "alternate PPO loss produced no observable total-loss change.")
     }
 
+    try validateRealBackwardStep(
+        basePolicy: mlpPolicy,
+        storage: mlpActorCriticStorage,
+        estimates: cpuGAE,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        tolerance: tolerance
+    )
+
+    let trainingConfig = CPUTrainingLoopConfig(
+        iterations: 3,
+        rolloutHorizon: 8,
+        epochsPerIteration: 2,
+        miniBatchSize: 256,
+        resetSeed: resetSeed,
+        shuffleSeed: 0xA5A5_1357,
+        gaeConfig: gaeConfig,
+        ppoConfig: ppoConfig,
+        optimizer: .adam(AdamConfig(learningRate: 0.001, beta1: 0.9, beta2: 0.999, epsilon: 1e-8))
+    )
+    var trainingModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let trainingRun = try runCPUTrainingLoop(
+        driver: driver,
+        model: &trainingModel,
+        config: trainingConfig
+    )
+    try validateTrainingRun(summary: trainingRun, tolerance: tolerance, context: "cpu training loop")
+
+    var trainingReplayModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let trainingReplay = try runCPUTrainingLoop(
+        driver: driver,
+        model: &trainingReplayModel,
+        config: trainingConfig
+    )
+    try compareTrainingRuns(lhs: trainingRun, rhs: trainingReplay, tolerance: replayTolerance, context: "cpu training replay")
+
+    var alternateTrainingModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let alternateTrainingRun = try runCPUTrainingLoop(
+        driver: driver,
+        model: &alternateTrainingModel,
+        config: CPUTrainingLoopConfig(
+            iterations: trainingConfig.iterations,
+            rolloutHorizon: trainingConfig.rolloutHorizon,
+            epochsPerIteration: trainingConfig.epochsPerIteration,
+            miniBatchSize: trainingConfig.miniBatchSize,
+            resetSeed: trainingConfig.resetSeed &+ 1,
+            shuffleSeed: trainingConfig.shuffleSeed,
+            gaeConfig: trainingConfig.gaeConfig,
+            ppoConfig: trainingConfig.ppoConfig,
+            optimizer: trainingConfig.optimizer
+        )
+    )
+    try ensureDifferentTrainingRuns(lhs: trainingRun, rhs: alternateTrainingRun, tolerance: replayTolerance, context: "alternate training loop seed")
+
+    var hybridCpuModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let hybridGpuPolicy = try makeReferenceMetalMLPPolicy(
+        device: device,
+        rootDir: rootDir,
+        envCount: count,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let hybridTrainingRun = try runHybridTrainingLoop(
+        driver: driver,
+        cpuModel: &hybridCpuModel,
+        gpuPolicy: hybridGpuPolicy,
+        config: trainingConfig
+    )
+    try validateTrainingRun(summary: hybridTrainingRun, tolerance: tolerance, context: "hybrid gpu-rollout training loop")
+
+    var hybridReplayCpuModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let hybridReplayGpuPolicy = try makeReferenceMetalMLPPolicy(
+        device: device,
+        rootDir: rootDir,
+        envCount: count,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let hybridTrainingReplay = try runHybridTrainingLoop(
+        driver: driver,
+        cpuModel: &hybridReplayCpuModel,
+        gpuPolicy: hybridReplayGpuPolicy,
+        config: trainingConfig
+    )
+    try compareTrainingRuns(lhs: hybridTrainingRun, rhs: hybridTrainingReplay, tolerance: replayTolerance, context: "hybrid training replay")
+
+    var hybridAlternateCpuModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let hybridAlternateGpuPolicy = try makeReferenceMetalMLPPolicy(
+        device: device,
+        rootDir: rootDir,
+        envCount: count,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let hybridAlternateRun = try runHybridTrainingLoop(
+        driver: driver,
+        cpuModel: &hybridAlternateCpuModel,
+        gpuPolicy: hybridAlternateGpuPolicy,
+        config: CPUTrainingLoopConfig(
+            iterations: trainingConfig.iterations,
+            rolloutHorizon: trainingConfig.rolloutHorizon,
+            epochsPerIteration: trainingConfig.epochsPerIteration,
+            miniBatchSize: trainingConfig.miniBatchSize,
+            resetSeed: trainingConfig.resetSeed &+ 1,
+            shuffleSeed: trainingConfig.shuffleSeed,
+            gaeConfig: trainingConfig.gaeConfig,
+            ppoConfig: trainingConfig.ppoConfig,
+            optimizer: trainingConfig.optimizer
+        )
+    )
+    try ensureDifferentTrainingRuns(lhs: hybridTrainingRun, rhs: hybridAlternateRun, tolerance: replayTolerance, context: "alternate hybrid training loop seed")
+
     print("CartPole validation harness passed")
     print("device: \(device.name)")
     print("environmentModule: CartPoleMetalEnvironment")
@@ -1059,6 +1418,10 @@ func runValidationHarness() throws {
     print("cpu and gpu gae outputs matched")
     print("ppo synthetic case matched expected values")
     print("cpu and gpu ppo losses matched")
+    print("manual backward/update step reduced loss")
+    print("adam step reduced loss")
+    print("cpu training loop replay matched exactly")
+    print("hybrid gpu-rollout training loop replay matched exactly")
     print("rollout storage replay matched exactly")
     for line in baseline.sampleLines {
         print(line)
