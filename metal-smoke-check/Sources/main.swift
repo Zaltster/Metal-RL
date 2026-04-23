@@ -163,6 +163,181 @@ func compareStorage(lhs: VectorRolloutStorage, rhs: VectorRolloutStorage, tolera
             message: "\(context) resetCounts mismatch."
         )
     }
+    switch (lhs.values, rhs.values) {
+    case let (.some(left), .some(right)):
+        try compareActionArrays(lhs: left, rhs: right, tolerance: tolerance, context: "\(context) values")
+    case (nil, nil):
+        break
+    default:
+        throw EnvProjectError.validationFailed(message: "\(context) values presence mismatch.")
+    }
+    switch (lhs.finalValues, rhs.finalValues) {
+    case let (.some(left), .some(right)):
+        try compareActionArrays(lhs: left, rhs: right, tolerance: tolerance, context: "\(context) finalValues")
+    case (nil, nil):
+        break
+    default:
+        throw EnvProjectError.validationFailed(message: "\(context) finalValues presence mismatch.")
+    }
+    switch (lhs.logProbs, rhs.logProbs) {
+    case let (.some(left), .some(right)):
+        try compareActionArrays(lhs: left, rhs: right, tolerance: tolerance, context: "\(context) logProbs")
+    case (nil, nil):
+        break
+    default:
+        throw EnvProjectError.validationFailed(message: "\(context) logProbs presence mismatch.")
+    }
+}
+
+func ensureDifferentStorageValuesOrActions(reference: VectorRolloutStorage, alternate: VectorRolloutStorage, tolerance: Float, context: String) throws {
+    for index in reference.actions.indices {
+        if abs(reference.actions[index] - alternate.actions[index]) > tolerance {
+            return
+        }
+    }
+
+    if let referenceValues = reference.values, let alternateValues = alternate.values {
+        for index in referenceValues.indices {
+            if abs(referenceValues[index] - alternateValues[index]) > tolerance {
+                return
+            }
+        }
+    }
+
+    throw EnvProjectError.validationFailed(message: "\(context) produced no observable action or value change.")
+}
+
+func validateGAESyntheticCase(tolerance: Float) throws {
+    let storage = try VectorRolloutStorage(
+        horizon: 3,
+        envCount: 2,
+        observationDim: 1,
+        actionDim: 1,
+        observations: [0, 0, 0, 0, 0, 0],
+        actions: [0, 0, 0, 0, 0, 0],
+        rewards: [
+            1.0, 0.5,
+            2.0, 1.0,
+            3.0, 1.5,
+        ],
+        dones: [
+            0, 1,
+            0, 0,
+            1, 0,
+        ],
+        resetCounts: [0, 0, 0, 0, 0, 0],
+        nextObservations: [0, 0, 0, 0, 0, 0],
+        values: [
+            0.5, 0.2,
+            0.6, 0.3,
+            0.7, 0.4,
+        ],
+        finalValues: [0.0, 0.9]
+    )
+    let estimates = try computeGAE(storage: storage, config: GAEConfig(gamma: 0.9, lambda: 0.8))
+
+    let expectedAdvantages: [Float] = [
+        3.69392, 0.3,
+        3.68600, 2.4352,
+        2.3,     1.91,
+    ]
+    let expectedReturns: [Float] = [
+        4.19392, 0.5,
+        4.28600, 2.7352,
+        3.0,     2.31,
+    ]
+
+    try compareActionArrays(
+        lhs: estimates.advantages,
+        rhs: expectedAdvantages,
+        tolerance: tolerance,
+        context: "GAE synthetic advantages"
+    )
+    try compareActionArrays(
+        lhs: estimates.returns,
+        rhs: expectedReturns,
+        tolerance: tolerance,
+        context: "GAE synthetic returns"
+    )
+}
+
+func validateGAEConsistency(
+    estimates: AdvantageEstimates,
+    storage: VectorRolloutStorage,
+    tolerance: Float,
+    context: String
+) throws {
+    guard let values = storage.values else {
+        throw EnvProjectError.validationFailed(message: "\(context) storage is missing values.")
+    }
+
+    if estimates.horizon != storage.horizon || estimates.envCount != storage.envCount {
+        throw EnvProjectError.validationFailed(message: "\(context) shape mismatch between GAE output and storage.")
+    }
+
+    for step in 0..<storage.horizon {
+        for env in 0..<storage.envCount {
+            let index = step * storage.envCount + env
+            let advantage = estimates.advantages[index]
+            let returnValue = estimates.returns[index]
+            let value = values[index]
+
+            if !advantage.isFinite || !returnValue.isFinite {
+                throw EnvProjectError.validationFailed(
+                    message: "\(context) produced non-finite GAE outputs at step \(step), env \(env)."
+                )
+            }
+
+            if abs((advantage + value) - returnValue) > tolerance {
+                throw EnvProjectError.validationFailed(
+                    message: "\(context) return mismatch at step \(step), env \(env): expected \(advantage + value), got \(returnValue)."
+                )
+            }
+        }
+    }
+}
+
+func comparePPOLosses(lhs: PPOLossBreakdown, rhs: PPOLossBreakdown, tolerance: Float, context: String) throws {
+    if lhs.sampleCount != rhs.sampleCount {
+        throw EnvProjectError.validationFailed(message: "\(context) sample-count mismatch: expected \(lhs.sampleCount), got \(rhs.sampleCount).")
+    }
+
+    func check(_ name: String, _ expected: Float, _ actual: Float) throws {
+        if abs(expected - actual) > tolerance {
+            throw EnvProjectError.validationFailed(
+                message: "\(context) \(name) mismatch: expected \(expected), got \(actual)."
+            )
+        }
+    }
+
+    try check("policyLoss", lhs.policyLoss, rhs.policyLoss)
+    try check("valueLoss", lhs.valueLoss, rhs.valueLoss)
+    try check("entropyBonus", lhs.entropyBonus, rhs.entropyBonus)
+    try check("totalLoss", lhs.totalLoss, rhs.totalLoss)
+    try check("meanRatio", lhs.meanRatio, rhs.meanRatio)
+}
+
+func validatePPOSyntheticCase(tolerance: Float) throws {
+    let config = PPOConfig(clipEpsilon: 0.2, valueCoefficient: 0.5, entropyCoefficient: 0.01)
+    let result = try computePPOLoss(
+        oldLogProbs: [0.0, 0.0],
+        newLogProbs: [Float(log(1.1)), Float(log(0.6))],
+        advantages: [1.0, -1.0],
+        returns: [1.5, -0.2],
+        newValues: [1.4, -0.1],
+        entropies: [0.3, 0.3],
+        config: config
+    )
+
+    let expected = PPOLossBreakdown(
+        sampleCount: 2,
+        policyLoss: -0.15,
+        valueLoss: 0.005,
+        entropyBonus: 0.3,
+        totalLoss: -0.1505,
+        meanRatio: 0.85
+    )
+    try comparePPOLosses(lhs: expected, rhs: result, tolerance: tolerance, context: "PPO synthetic case")
 }
 
 func validateStorageAgainstRollout(storage: VectorRolloutStorage, rollout: VectorRollout, tolerance: Float, context: String) throws {
@@ -423,6 +598,11 @@ func runValidationHarness() throws {
         thetaThresholdRadians: 12.0 * .pi / 180.0
     )
     let initialStates = makeCartPoleInitialStates(count: count)
+    let gaeConfig = GAEConfig(gamma: 0.99, lambda: 0.95)
+    let ppoConfig = PPOConfig(clipEpsilon: 0.2, valueCoefficient: 0.5, entropyCoefficient: 0.01)
+
+    try validateGAESyntheticCase(tolerance: 1e-4)
+    try validatePPOSyntheticCase(tolerance: 1e-4)
 
     let driver = try CartPoleVectorEnvDriver(
         device: device,
@@ -448,6 +628,28 @@ func runValidationHarness() throws {
         actionSpec: driver.actionSpec
     )
     let alternateMetalLinearPolicy = try makeAlternateMetalLinearPolicy(
+        device: device,
+        rootDir: rootDir,
+        envCount: count,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let mlpPolicy = try makeReferenceMLPPolicy(
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let alternateMLPPolicy = try makeAlternateMLPPolicy(
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let metalMLPPolicy = try makeReferenceMetalMLPPolicy(
+        device: device,
+        rootDir: rootDir,
+        envCount: count,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let alternateMetalMLPPolicy = try makeAlternateMetalMLPPolicy(
         device: device,
         rootDir: rootDir,
         envCount: count,
@@ -533,6 +735,42 @@ func runValidationHarness() throws {
         tolerance: tolerance,
         context: "CPU-vs-GPU linear-policy probe"
     )
+    let cpuMLPProbeActions = try mlpPolicy.actions(
+        for: policyProbeBatch.observations,
+        envCount: driver.envCount,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let gpuMLPProbeActions = try metalMLPPolicy.actions(
+        for: policyProbeBatch.observations,
+        envCount: driver.envCount,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    try compareActionArrays(
+        lhs: cpuMLPProbeActions,
+        rhs: gpuMLPProbeActions,
+        tolerance: tolerance,
+        context: "CPU-vs-GPU MLP-policy probe"
+    )
+    let cpuMLPProbeValues = try mlpPolicy.values(
+        for: policyProbeBatch.observations,
+        envCount: driver.envCount,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let gpuMLPProbeValues = try metalMLPPolicy.values(
+        for: policyProbeBatch.observations,
+        envCount: driver.envCount,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    try compareActionArrays(
+        lhs: cpuMLPProbeValues,
+        rhs: gpuMLPProbeValues,
+        tolerance: tolerance,
+        context: "CPU-vs-GPU MLP-value probe"
+    )
 
     driver.setResetSeed(resetSeed)
     let linearPolicyBaseline = try collectPolicyRollout(
@@ -604,6 +842,187 @@ func runValidationHarness() throws {
     )
     try compareStorage(lhs: metalLinearPolicyStorage, rhs: metalLinearPolicyStoredReplay, tolerance: replayTolerance, context: "gpu linear-policy storage replay")
 
+    driver.setResetSeed(resetSeed)
+    let mlpPolicyBaseline = try collectPolicyRollout(
+        driver: driver,
+        policy: mlpPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+
+    driver.setResetSeed(resetSeed)
+    let mlpPolicyReplay = try collectPolicyRollout(
+        driver: driver,
+        policy: mlpPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try compareRolloutActions(lhs: mlpPolicyBaseline, rhs: mlpPolicyReplay, tolerance: replayTolerance)
+    try compareRolloutBatches(lhs: mlpPolicyBaseline, rhs: mlpPolicyReplay, tolerance: replayTolerance)
+    try validateActionBounds(rollout: mlpPolicyBaseline, actionSpec: driver.actionSpec, tolerance: tolerance)
+
+    driver.setResetSeed(resetSeed)
+    let mlpPolicyAlternate = try collectPolicyRollout(
+        driver: driver,
+        policy: alternateMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try ensureDifferentPoliciesChangeRollout(reference: mlpPolicyBaseline, alternate: mlpPolicyAlternate, tolerance: replayTolerance)
+
+    driver.setResetSeed(resetSeed)
+    let metalMLPPolicyBaseline = try collectPolicyRollout(
+        driver: driver,
+        policy: metalMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+
+    driver.setResetSeed(resetSeed)
+    let metalMLPPolicyReplay = try collectPolicyRollout(
+        driver: driver,
+        policy: metalMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try compareRolloutActions(lhs: metalMLPPolicyBaseline, rhs: metalMLPPolicyReplay, tolerance: replayTolerance)
+    try compareRolloutBatches(lhs: metalMLPPolicyBaseline, rhs: metalMLPPolicyReplay, tolerance: replayTolerance)
+    try validateActionBounds(rollout: metalMLPPolicyBaseline, actionSpec: driver.actionSpec, tolerance: tolerance)
+    try compareRolloutActions(lhs: mlpPolicyBaseline, rhs: metalMLPPolicyBaseline, tolerance: tolerance)
+    try compareRolloutBatches(lhs: mlpPolicyBaseline, rhs: metalMLPPolicyBaseline, tolerance: tolerance)
+
+    driver.setResetSeed(resetSeed)
+    let metalMLPPolicyAlternate = try collectPolicyRollout(
+        driver: driver,
+        policy: alternateMetalMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try ensureDifferentPoliciesChangeRollout(reference: metalMLPPolicyBaseline, alternate: metalMLPPolicyAlternate, tolerance: replayTolerance)
+
+    let mlpPolicyStorage = try makeRolloutStorage(from: mlpPolicyBaseline, driver: driver)
+    try validateStorageAgainstRollout(storage: mlpPolicyStorage, rollout: mlpPolicyBaseline, tolerance: tolerance, context: "cpu mlp-policy storage")
+    let mlpPolicyStoredReplay = try collectPolicyRolloutStorage(
+        driver: driver,
+        policy: mlpPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try compareStorage(lhs: mlpPolicyStorage, rhs: mlpPolicyStoredReplay, tolerance: replayTolerance, context: "cpu mlp-policy storage replay")
+
+    driver.setResetSeed(resetSeed)
+    let mlpActorCriticStorage = try collectActorCriticRolloutStorage(
+        driver: driver,
+        policy: mlpPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    driver.setResetSeed(resetSeed)
+    let mlpActorCriticReplay = try collectActorCriticRolloutStorage(
+        driver: driver,
+        policy: mlpPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try compareStorage(lhs: mlpActorCriticStorage, rhs: mlpActorCriticReplay, tolerance: replayTolerance, context: "cpu actor-critic storage replay")
+
+    let metalMLPPolicyStorage = try makeRolloutStorage(from: metalMLPPolicyBaseline, driver: driver)
+    try validateStorageAgainstRollout(storage: metalMLPPolicyStorage, rollout: metalMLPPolicyBaseline, tolerance: tolerance, context: "gpu mlp-policy storage")
+    let metalMLPPolicyStoredReplay = try collectPolicyRolloutStorage(
+        driver: driver,
+        policy: metalMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try compareStorage(lhs: metalMLPPolicyStorage, rhs: metalMLPPolicyStoredReplay, tolerance: replayTolerance, context: "gpu mlp-policy storage replay")
+
+    driver.setResetSeed(resetSeed)
+    let metalMLPActorCriticStorage = try collectActorCriticRolloutStorage(
+        driver: driver,
+        policy: metalMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    driver.setResetSeed(resetSeed)
+    let metalMLPActorCriticReplay = try collectActorCriticRolloutStorage(
+        driver: driver,
+        policy: metalMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try compareStorage(lhs: metalMLPActorCriticStorage, rhs: metalMLPActorCriticReplay, tolerance: replayTolerance, context: "gpu actor-critic storage replay")
+    try compareStorage(lhs: mlpActorCriticStorage, rhs: metalMLPActorCriticStorage, tolerance: tolerance, context: "cpu-vs-gpu actor-critic storage")
+
+    driver.setResetSeed(resetSeed)
+    let alternateMetalMLPActorCriticStorage = try collectActorCriticRolloutStorage(
+        driver: driver,
+        policy: alternateMetalMLPPolicy,
+        config: PolicyRolloutConfig(horizon: 8)
+    )
+    try ensureDifferentStorageValuesOrActions(
+        reference: metalMLPActorCriticStorage,
+        alternate: alternateMetalMLPActorCriticStorage,
+        tolerance: replayTolerance,
+        context: "alternate metal mlp actor-critic storage"
+    )
+
+    let cpuGAE = try computeGAE(storage: mlpActorCriticStorage, config: gaeConfig)
+    let cpuGAEReplay = try computeGAE(storage: mlpActorCriticReplay, config: gaeConfig)
+    try compareActionArrays(lhs: cpuGAE.advantages, rhs: cpuGAEReplay.advantages, tolerance: replayTolerance, context: "cpu GAE replay advantages")
+    try compareActionArrays(lhs: cpuGAE.returns, rhs: cpuGAEReplay.returns, tolerance: replayTolerance, context: "cpu GAE replay returns")
+    try validateGAEConsistency(estimates: cpuGAE, storage: mlpActorCriticStorage, tolerance: tolerance, context: "cpu GAE")
+
+    let gpuGAE = try computeGAE(storage: metalMLPActorCriticStorage, config: gaeConfig)
+    let gpuGAEReplay = try computeGAE(storage: metalMLPActorCriticReplay, config: gaeConfig)
+    try compareActionArrays(lhs: gpuGAE.advantages, rhs: gpuGAEReplay.advantages, tolerance: replayTolerance, context: "gpu GAE replay advantages")
+    try compareActionArrays(lhs: gpuGAE.returns, rhs: gpuGAEReplay.returns, tolerance: replayTolerance, context: "gpu GAE replay returns")
+    try validateGAEConsistency(estimates: gpuGAE, storage: metalMLPActorCriticStorage, tolerance: tolerance, context: "gpu GAE")
+    try compareActionArrays(lhs: cpuGAE.advantages, rhs: gpuGAE.advantages, tolerance: tolerance, context: "cpu-vs-gpu GAE advantages")
+    try compareActionArrays(lhs: cpuGAE.returns, rhs: gpuGAE.returns, tolerance: tolerance, context: "cpu-vs-gpu GAE returns")
+
+    let cpuPPOLoss = try computePPOLoss(
+        storage: mlpActorCriticStorage,
+        estimates: cpuGAE,
+        policy: mlpPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        config: ppoConfig
+    )
+    let cpuPPOLossReplay = try computePPOLoss(
+        storage: mlpActorCriticReplay,
+        estimates: cpuGAEReplay,
+        policy: mlpPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        config: ppoConfig
+    )
+    try comparePPOLosses(lhs: cpuPPOLoss, rhs: cpuPPOLossReplay, tolerance: replayTolerance, context: "cpu PPO replay")
+    if abs(cpuPPOLoss.meanRatio - 1.0) > tolerance {
+        throw EnvProjectError.validationFailed(message: "cpu PPO same-policy meanRatio mismatch: expected 1.0, got \(cpuPPOLoss.meanRatio).")
+    }
+
+    let gpuPPOLoss = try computePPOLoss(
+        storage: metalMLPActorCriticStorage,
+        estimates: gpuGAE,
+        policy: metalMLPPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        config: ppoConfig
+    )
+    let gpuPPOLossReplay = try computePPOLoss(
+        storage: metalMLPActorCriticReplay,
+        estimates: gpuGAEReplay,
+        policy: metalMLPPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        config: ppoConfig
+    )
+    try comparePPOLosses(lhs: gpuPPOLoss, rhs: gpuPPOLossReplay, tolerance: replayTolerance, context: "gpu PPO replay")
+    if abs(gpuPPOLoss.meanRatio - 1.0) > tolerance {
+        throw EnvProjectError.validationFailed(message: "gpu PPO same-policy meanRatio mismatch: expected 1.0, got \(gpuPPOLoss.meanRatio).")
+    }
+    try comparePPOLosses(lhs: cpuPPOLoss, rhs: gpuPPOLoss, tolerance: tolerance, context: "cpu-vs-gpu PPO")
+
+    let alternatePPOLoss = try computePPOLoss(
+        storage: metalMLPActorCriticStorage,
+        estimates: gpuGAE,
+        policy: alternateMetalMLPPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        config: ppoConfig
+    )
+    if abs(alternatePPOLoss.totalLoss - gpuPPOLoss.totalLoss) <= replayTolerance {
+        throw EnvProjectError.validationFailed(message: "alternate PPO loss produced no observable total-loss change.")
+    }
+
     print("CartPole validation harness passed")
     print("device: \(device.name)")
     print("environmentModule: CartPoleMetalEnvironment")
@@ -630,6 +1049,16 @@ func runValidationHarness() throws {
     print("cpu and gpu linear-policy outputs matched")
     print("gpu linear-policy replay matched exactly")
     print("alternate gpu linear policy changed actions")
+    print("mlp-policy replay matched exactly")
+    print("cpu and gpu mlp-policy outputs matched")
+    print("cpu and gpu mlp-value outputs matched")
+    print("gpu mlp-policy replay matched exactly")
+    print("alternate gpu mlp policy changed actions")
+    print("actor-critic storage replay matched exactly")
+    print("gae synthetic case matched expected values")
+    print("cpu and gpu gae outputs matched")
+    print("ppo synthetic case matched expected values")
+    print("cpu and gpu ppo losses matched")
     print("rollout storage replay matched exactly")
     for line in baseline.sampleLines {
         print(line)

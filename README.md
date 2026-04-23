@@ -28,14 +28,19 @@ What is implemented:
 - fixed-weight CPU linear policy rollout collection
 - fixed-weight GPU linear policy rollout collection
 - CPU/GPU parity checks for the fixed linear policy
+- fixed-weight CPU MLP policy rollout collection
+- fixed-weight GPU MLP policy rollout collection
+- CPU/GPU parity checks for the fixed MLP policy
+- fixed-weight CPU/GPU MLP value prediction parity
+- actor-critic-style rollout storage with value predictions
+- host-side GAE computation with synthetic and rollout-backed validation
+- host-side PPO loss computation with synthetic and rollout-backed validation
 - host-side rollout storage with explicit indexing helpers
 
 What is not implemented yet:
 
-- learned neural network forward pass
-- value prediction
-- GAE
-- PPO loss
+- learned neural network training
+- policy sampling with a learned stochastic policy
 - backpropagation
 - optimizer updates
 - end-to-end training
@@ -51,9 +56,13 @@ What is not implemented yet:
 - `src/rl/random/`
   Random-policy rollout collection.
 - `src/rl/policy/`
-  Fixed-weight CPU and GPU linear policy inference and rollout collection.
+  Fixed-weight CPU and GPU linear/MLP policy inference, plus fixed MLP value prediction.
 - `src/rl/storage/`
   Host-side rollout storage.
+- `src/rl/postprocess/`
+  Host-side trajectory postprocessing such as GAE.
+- `src/rl/losses/`
+  Host-side PPO loss computation.
 - `metal-smoke-check/`
   Deterministic validation harness used to verify the stack end to end.
 - `docs/`
@@ -73,6 +82,12 @@ The current harness checks:
 - seeded replay for random-policy rollouts
 - seeded replay for fixed-policy rollouts
 - CPU/GPU fixed-policy parity
+- CPU/GPU fixed-MLP parity
+- CPU/GPU fixed-value parity
+- synthetic GAE correctness
+- CPU/GPU GAE parity on stored actor-critic rollouts
+- synthetic PPO loss correctness
+- CPU/GPU PPO loss parity on stored actor-critic rollouts
 - rollout storage replay
 
 ## Run
@@ -100,9 +115,9 @@ Expected output includes lines like:
 The next major phase is learned-model work:
 
 1. learned policy forward pass on GPU
-2. value prediction
-3. trajectory postprocessing such as GAE
-4. PPO losses and optimization
+2. optimization and backward/update logic
+3. end-to-end training
+4. broader environment/model scaling
 
 ## Notes
 

@@ -19,8 +19,12 @@ swiftc \
   "$ROOT_DIR/src/envs/cartpole/CartPoleVectorEnvDriver.swift" \
   "$ROOT_DIR/src/rl/random/RandomPolicyRollout.swift" \
   "$ROOT_DIR/src/rl/policy/LinearPolicy.swift" \
+  "$ROOT_DIR/src/rl/policy/MLPPolicy.swift" \
   "$ROOT_DIR/src/rl/policy/MetalLinearPolicy.swift" \
+  "$ROOT_DIR/src/rl/policy/MetalMLPPolicy.swift" \
   "$ROOT_DIR/src/rl/policy/PolicyRollout.swift" \
+  "$ROOT_DIR/src/rl/losses/PPOLoss.swift" \
+  "$ROOT_DIR/src/rl/postprocess/GAE.swift" \
   "$ROOT_DIR/src/rl/storage/RolloutStorage.swift" \
   "$PROJECT_DIR/Sources/main.swift" \
   -o "$BUILD_DIR/cartpole-validation"

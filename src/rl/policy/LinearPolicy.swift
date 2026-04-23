@@ -9,6 +9,87 @@ protocol VectorPolicy {
     ) throws -> [Float]
 }
 
+struct PolicyValueOutputs {
+    let actions: [Float]
+    let values: [Float]
+}
+
+struct GaussianPolicyOutputs {
+    let actions: [Float]
+    let actionMeans: [Float]
+    let values: [Float]
+    let logProbs: [Float]
+    let entropies: [Float]
+    let logStd: [Float]
+}
+
+protocol VectorActorCriticPolicy: VectorPolicy {
+    func evaluate(
+        for observations: [Float],
+        envCount: Int,
+        observationSpec: VectorObservationSpec,
+        actionSpec: VectorActionSpec
+    ) throws -> PolicyValueOutputs
+}
+
+extension VectorActorCriticPolicy {
+    func actions(
+        for observations: [Float],
+        envCount: Int,
+        observationSpec: VectorObservationSpec,
+        actionSpec: VectorActionSpec
+    ) throws -> [Float] {
+        try evaluate(
+            for: observations,
+            envCount: envCount,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec
+        ).actions
+    }
+
+    func values(
+        for observations: [Float],
+        envCount: Int,
+        observationSpec: VectorObservationSpec,
+        actionSpec: VectorActionSpec
+    ) throws -> [Float] {
+        try evaluate(
+            for: observations,
+            envCount: envCount,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec
+        ).values
+    }
+}
+
+protocol VectorGaussianActorCriticPolicy: VectorActorCriticPolicy {
+    func evaluateGaussian(
+        for observations: [Float],
+        taking actions: [Float]?,
+        envCount: Int,
+        observationSpec: VectorObservationSpec,
+        actionSpec: VectorActionSpec
+    ) throws -> GaussianPolicyOutputs
+}
+
+extension VectorGaussianActorCriticPolicy {
+    func evaluate(
+        for observations: [Float],
+        envCount: Int,
+        observationSpec: VectorObservationSpec,
+        actionSpec: VectorActionSpec
+    ) throws -> PolicyValueOutputs {
+        let outputs = try evaluateGaussian(
+            for: observations,
+            taking: nil,
+            envCount: envCount,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec
+        )
+        return PolicyValueOutputs(actions: outputs.actions, values: outputs.values)
+    }
+}
+
 struct LinearPolicy: VectorPolicy {
     let weights: [Float]
     let bias: [Float]
