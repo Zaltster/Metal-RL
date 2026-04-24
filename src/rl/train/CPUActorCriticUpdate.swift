@@ -20,6 +20,12 @@ struct PPOBatch {
         advantages: [Float],
         returns: [Float]
     ) throws {
+        if sampleCount <= 0 {
+            throw EnvProjectError.validationFailed(message: "PPOBatch requires at least one sample.")
+        }
+        if observationDim <= 0 || actionDim <= 0 {
+            throw EnvProjectError.validationFailed(message: "PPOBatch dimensions must be positive.")
+        }
         if observations.count != sampleCount * observationDim {
             throw EnvProjectError.validationFailed(
                 message: "PPOBatch observation size mismatch: expected \(sampleCount * observationDim), got \(observations.count)."
@@ -321,7 +327,7 @@ struct TrainableMLPActorCritic: VectorGaussianActorCriticPolicy {
         }
     }
 
-    private func computeGradients(
+    func computeGradients(
         batch: PPOBatch,
         observationSpec: VectorObservationSpec,
         actionSpec: VectorActionSpec,

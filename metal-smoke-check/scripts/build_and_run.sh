@@ -29,6 +29,11 @@ swiftc \
   "$ROOT_DIR/src/rl/train/CPUActorCriticUpdate.swift" \
   "$ROOT_DIR/src/rl/train/CPUTrainingLoop.swift" \
   "$ROOT_DIR/src/rl/train/HybridTrainingLoop.swift" \
+  "$ROOT_DIR/src/rl/train/MetalMLPGradients.swift" \
+  "$ROOT_DIR/src/rl/train/MetalSGDTrainingStep.swift" \
+  "$ROOT_DIR/src/rl/train/MetalTrainableMLPActorCritic.swift" \
+  "$ROOT_DIR/src/rl/train/PersistentMetalTrainingLoop.swift" \
+  "$ROOT_DIR/src/rl/train/TrainingCheckpoint.swift" \
   "$PROJECT_DIR/Sources/main.swift" \
   -o "$BUILD_DIR/cartpole-validation"
 

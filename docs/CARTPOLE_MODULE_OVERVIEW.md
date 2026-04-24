@@ -184,6 +184,35 @@ This is intentionally narrow. It exists to prove that:
 - a simple Adam step changes parameters
 - the loss can be reduced on both a synthetic PPO batch and a real stored rollout batch
 
+## Metal Gradient Parity
+
+There is now a first narrow Metal gradient module:
+
+- `MetalMLPGradientComputer`
+- `MetalTrainableMLPActorCritic`
+- `runMetalSGDTrainingStep(...)`
+- `runPersistentMetalTrainingLoop(...)`
+- `mlp_ppo_per_sample_gradients`
+- `mlp_reduce_per_sample_gradients`
+- `mlp_sgd_update`
+- `mlp_adam_update`
+
+This now backs the default standalone CartPole demo path. It computes per-sample PPO gradients for the current one-hidden-layer actor-critic MLP, reduces those gradients with a second Metal kernel, applies Metal SGD or Adam updates, and can keep trainable parameter and Adam state buffers resident across repeated optimizer steps. A tiny persistent-GPU optimizer loop is validated against the matching CPU SGD and Adam loops. Rollout policy sync now copies directly between Metal buffers; host readback is still used for parity validation and final model summaries.
+
+Its current job is to prove that:
+
+- the hand-derived PPO/MLP gradient math can be reproduced in Metal
+- policy and value gradients both match the CPU path after GPU-side reduction on a synthetic PPO batch
+- a simple Metal SGD update produces the same updated weights as the CPU SGD path
+- persistent Metal Adam state produces the same updated weights as the CPU Adam path
+- a single Metal SGD training step matches CPU loss and updated weights on both synthetic and real rollout PPO batches
+- repeated persistent-buffer Metal SGD updates match repeated CPU SGD updates on both synthetic and real rollout PPO batches
+- repeated persistent-buffer Metal Adam updates match repeated CPU Adam updates on both synthetic and real rollout PPO batches
+- tiny persistent Metal SGD and Adam loops match the corresponding CPU training loops
+- persistent trainable buffers can be copied directly into rollout policy buffers without reconstructing the model on the host
+- persistent trainable buffers and Adam state can be checkpointed and restored without changing the next Adam update
+- the standalone demo can use persistent GPU Adam while keeping the hybrid CPU-Adam path selectable
+
 ## CPU Training Loop
 
 There is now also a first repeated training-loop module:
@@ -208,19 +237,38 @@ There is now also a first hybrid training path:
 
 - `runHybridTrainingLoop(...)`
 - `MetalMLPPolicy.load(model:)`
+- `MLPActorCriticCheckpoint`
+- `MLPActorCriticTrainingStateCheckpoint`
+- `saveCheckpoint(...)`
+- `saveTrainingStateCheckpoint(...)`
+- `loadMLPActorCriticCheckpoint(...)`
+- `loadMLPActorCriticTrainingStateCheckpoint(...)`
 - standalone demo entrypoint in `train-cartpole-demo/`
+- `TRAIN_BACKEND=persistent-gpu-adam`
+- `TRAIN_BACKEND=hybrid-cpu-adam`
 
-This path keeps:
+The hybrid path keeps:
 
 - environment stepping on the GPU
 - policy/value rollout inference on the GPU
 - PPO/GAE/update math on the CPU
+- trainable model checkpointing on the host side
+- persistent Metal trainable model and Adam-state checkpointing for validation/restart tests
+
+The default standalone demo now uses the persistent GPU-Adam path instead:
+
+- environment stepping on the GPU
+- policy/value rollout inference on the GPU
+- PPO gradients, gradient reduction, and Adam updates on the GPU
+- GAE and summary/loss readback still on the host
 
 Its current job is to prove that:
 
 - trainable CPU weights can be synchronized into the Metal policy
 - rollout collection can stay GPU-first during training
 - the hybrid loop is still deterministic under fixed seeds
+- a restored checkpoint can be loaded back into the Metal policy and preserve CPU/GPU forward parity
+- a restored persistent Metal training-state checkpoint preserves the next Adam optimizer update
 
 ## Validation Harness
 

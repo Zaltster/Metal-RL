@@ -190,6 +190,36 @@ final class MetalMLPPolicy: VectorActorCriticPolicy {
         try load(policy: model.asPolicy())
     }
 
+    func load(from trainableModel: MetalTrainableMLPActorCritic) throws {
+        try load(parameterBuffers: trainableModel.parameterBuffers())
+    }
+
+    func load(parameterBuffers: MetalMLPTrainableParameterBuffers) throws {
+        let hiddenDim = Int(params.hiddenDim)
+        let expectedInputWeightCount = observationSpec.elementsPerEnv * hiddenDim
+        let expectedOutputWeightCount = actionSpec.dimensionsPerEnv * hiddenDim
+
+        if parameterBuffers.observationDim != observationSpec.elementsPerEnv ||
+            parameterBuffers.hiddenDim != hiddenDim ||
+            parameterBuffers.actionDim != actionSpec.dimensionsPerEnv {
+            throw EnvProjectError.validationFailed(message: "MetalMLPPolicy trainable-buffer dimension mismatch.")
+        }
+        if parameterBuffers.inputWeightCount != expectedInputWeightCount ||
+            parameterBuffers.inputBiasCount != hiddenDim ||
+            parameterBuffers.outputWeightCount != expectedOutputWeightCount ||
+            parameterBuffers.outputBiasCount != actionSpec.dimensionsPerEnv ||
+            parameterBuffers.valueWeightCount != hiddenDim {
+            throw EnvProjectError.validationFailed(message: "MetalMLPPolicy trainable-buffer parameter-count mismatch.")
+        }
+
+        try copyBuffer(parameterBuffers.inputWeightBuffer, to: inputWeightBuffer, floatCount: parameterBuffers.inputWeightCount)
+        try copyBuffer(parameterBuffers.inputBiasBuffer, to: inputBiasBuffer, floatCount: parameterBuffers.inputBiasCount)
+        try copyBuffer(parameterBuffers.outputWeightBuffer, to: outputWeightBuffer, floatCount: parameterBuffers.outputWeightCount)
+        try copyBuffer(parameterBuffers.outputBiasBuffer, to: outputBiasBuffer, floatCount: parameterBuffers.outputBiasCount)
+        try copyBuffer(parameterBuffers.valueWeightBuffer, to: valueWeightBuffer, floatCount: parameterBuffers.valueWeightCount)
+        try copyBuffer(parameterBuffers.valueBiasBuffer, to: valueBiasBuffer, floatCount: 1)
+    }
+
     func evaluate(
         for observations: [Float],
         envCount: Int,
@@ -242,6 +272,30 @@ final class MetalMLPPolicy: VectorActorCriticPolicy {
             actions: readArray(from: actionBuffer, count: envCount * actionSpec.dimensionsPerEnv),
             values: readArray(from: valueBuffer, count: envCount)
         )
+    }
+
+    private func copyBuffer(_ source: MTLBuffer, to destination: MTLBuffer, floatCount: Int) throws {
+        let byteCount = MemoryLayout<Float>.stride * floatCount
+        if byteCount > source.length || byteCount > destination.length {
+            throw EnvProjectError.validationFailed(message: "MetalMLPPolicy buffer-copy size mismatch.")
+        }
+        if source.device.registryID != destination.device.registryID {
+            throw EnvProjectError.validationFailed(message: "MetalMLPPolicy cannot copy buffers across different Metal devices.")
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            throw EnvProjectError.commandBufferUnavailable
+        }
+        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            throw EnvProjectError.encoderUnavailable
+        }
+        blitEncoder.copy(from: source, sourceOffset: 0, to: destination, destinationOffset: 0, size: byteCount)
+        blitEncoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw EnvProjectError.pipelineCreationFailed(String(describing: error))
+        }
     }
 }
 

@@ -141,6 +141,26 @@ func compareActionArrays(lhs: [Float], rhs: [Float], tolerance: Float, context: 
     }
 }
 
+func compareAdamStates(lhs: AdamState, rhs: AdamState, tolerance: Float, context: String) throws {
+    if lhs.timestep != rhs.timestep {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) timestep mismatch: expected \(lhs.timestep), got \(rhs.timestep)."
+        )
+    }
+    try compareActionArrays(lhs: lhs.inputWeightsM, rhs: rhs.inputWeightsM, tolerance: tolerance, context: "\(context) inputWeightsM")
+    try compareActionArrays(lhs: lhs.inputWeightsV, rhs: rhs.inputWeightsV, tolerance: tolerance, context: "\(context) inputWeightsV")
+    try compareActionArrays(lhs: lhs.inputBiasM, rhs: rhs.inputBiasM, tolerance: tolerance, context: "\(context) inputBiasM")
+    try compareActionArrays(lhs: lhs.inputBiasV, rhs: rhs.inputBiasV, tolerance: tolerance, context: "\(context) inputBiasV")
+    try compareActionArrays(lhs: lhs.outputWeightsM, rhs: rhs.outputWeightsM, tolerance: tolerance, context: "\(context) outputWeightsM")
+    try compareActionArrays(lhs: lhs.outputWeightsV, rhs: rhs.outputWeightsV, tolerance: tolerance, context: "\(context) outputWeightsV")
+    try compareActionArrays(lhs: lhs.outputBiasM, rhs: rhs.outputBiasM, tolerance: tolerance, context: "\(context) outputBiasM")
+    try compareActionArrays(lhs: lhs.outputBiasV, rhs: rhs.outputBiasV, tolerance: tolerance, context: "\(context) outputBiasV")
+    try compareActionArrays(lhs: lhs.valueWeightsM, rhs: rhs.valueWeightsM, tolerance: tolerance, context: "\(context) valueWeightsM")
+    try compareActionArrays(lhs: lhs.valueWeightsV, rhs: rhs.valueWeightsV, tolerance: tolerance, context: "\(context) valueWeightsV")
+    try compareActionArrays(lhs: [lhs.valueBiasM], rhs: [rhs.valueBiasM], tolerance: tolerance, context: "\(context) valueBiasM")
+    try compareActionArrays(lhs: [lhs.valueBiasV], rhs: [rhs.valueBiasV], tolerance: tolerance, context: "\(context) valueBiasV")
+}
+
 func compareStorage(lhs: VectorRolloutStorage, rhs: VectorRolloutStorage, tolerance: Float, context: String) throws {
     if lhs.horizon != rhs.horizon || lhs.envCount != rhs.envCount || lhs.observationDim != rhs.observationDim || lhs.actionDim != rhs.actionDim {
         throw EnvProjectError.validationFailed(
@@ -385,6 +405,689 @@ func validateTrainingRun(summary: CPUTrainingRunSummary, tolerance: Float, conte
         if iteration.parameterDeltaL1 <= tolerance {
             throw EnvProjectError.validationFailed(message: "\(context) produced no update at iteration \(iteration.iteration).")
         }
+    }
+}
+
+func validateTrainingCheckpointRoundTrip(
+    model: TrainableMLPActorCritic,
+    gpuPolicy: MetalMLPPolicy,
+    observations: [Float],
+    envCount: Int,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    tolerance: Float
+) throws {
+    let checkpointURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("metal-rl-checkpoints/smoke-mlp-actor-critic.json")
+    let checkpoint = try MLPActorCriticCheckpoint(
+        model: model,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    try saveCheckpoint(checkpoint, to: checkpointURL)
+
+    let restoredCheckpoint = try loadMLPActorCriticCheckpoint(from: checkpointURL)
+    let restoredModel = try restoredCheckpoint.restoreModel()
+
+    try compareActionArrays(
+        lhs: model.inputWeights,
+        rhs: restoredModel.inputWeights,
+        tolerance: tolerance,
+        context: "checkpoint inputWeights round-trip"
+    )
+    try compareActionArrays(
+        lhs: model.inputBias,
+        rhs: restoredModel.inputBias,
+        tolerance: tolerance,
+        context: "checkpoint inputBias round-trip"
+    )
+    try compareActionArrays(
+        lhs: model.outputWeights,
+        rhs: restoredModel.outputWeights,
+        tolerance: tolerance,
+        context: "checkpoint outputWeights round-trip"
+    )
+    try compareActionArrays(
+        lhs: model.outputBias,
+        rhs: restoredModel.outputBias,
+        tolerance: tolerance,
+        context: "checkpoint outputBias round-trip"
+    )
+    try compareActionArrays(
+        lhs: model.valueWeights,
+        rhs: restoredModel.valueWeights,
+        tolerance: tolerance,
+        context: "checkpoint valueWeights round-trip"
+    )
+    if abs(model.valueBias - restoredModel.valueBias) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "checkpoint valueBias round-trip mismatch: expected \(model.valueBias), got \(restoredModel.valueBias)."
+        )
+    }
+    try compareActionArrays(
+        lhs: model.logStd,
+        rhs: restoredModel.logStd,
+        tolerance: tolerance,
+        context: "checkpoint logStd round-trip"
+    )
+
+    try gpuPolicy.load(model: restoredModel)
+    let cpuOutput = try restoredModel.evaluate(
+        for: observations,
+        envCount: envCount,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let gpuOutput = try gpuPolicy.evaluate(
+        for: observations,
+        envCount: envCount,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    try compareActionArrays(
+        lhs: cpuOutput.actions,
+        rhs: gpuOutput.actions,
+        tolerance: tolerance,
+        context: "checkpoint restored CPU-vs-GPU actions"
+    )
+    try compareActionArrays(
+        lhs: cpuOutput.values,
+        rhs: gpuOutput.values,
+        tolerance: tolerance,
+        context: "checkpoint restored CPU-vs-GPU values"
+    )
+}
+
+func compareGradients(lhs: MLPGradients, rhs: MLPGradients, tolerance: Float, context: String) throws {
+    try compareActionArrays(lhs: lhs.inputWeights, rhs: rhs.inputWeights, tolerance: tolerance, context: "\(context) inputWeights")
+    try compareActionArrays(lhs: lhs.inputBias, rhs: rhs.inputBias, tolerance: tolerance, context: "\(context) inputBias")
+    try compareActionArrays(lhs: lhs.outputWeights, rhs: rhs.outputWeights, tolerance: tolerance, context: "\(context) outputWeights")
+    try compareActionArrays(lhs: lhs.outputBias, rhs: rhs.outputBias, tolerance: tolerance, context: "\(context) outputBias")
+    try compareActionArrays(lhs: lhs.valueWeights, rhs: rhs.valueWeights, tolerance: tolerance, context: "\(context) valueWeights")
+    if abs(lhs.valueBias - rhs.valueBias) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) valueBias mismatch: expected \(lhs.valueBias), got \(rhs.valueBias)."
+        )
+    }
+}
+
+func expectValidationFailure(_ context: String, operation: () throws -> Void) throws {
+    do {
+        try operation()
+    } catch EnvProjectError.validationFailed {
+        return
+    }
+
+    throw EnvProjectError.validationFailed(message: "\(context) did not fail validation.")
+}
+
+func compareTrainableModels(
+    lhs: TrainableMLPActorCritic,
+    rhs: TrainableMLPActorCritic,
+    tolerance: Float,
+    context: String
+) throws {
+    try compareActionArrays(lhs: lhs.inputWeights, rhs: rhs.inputWeights, tolerance: tolerance, context: "\(context) inputWeights")
+    try compareActionArrays(lhs: lhs.inputBias, rhs: rhs.inputBias, tolerance: tolerance, context: "\(context) inputBias")
+    try compareActionArrays(lhs: lhs.outputWeights, rhs: rhs.outputWeights, tolerance: tolerance, context: "\(context) outputWeights")
+    try compareActionArrays(lhs: lhs.outputBias, rhs: rhs.outputBias, tolerance: tolerance, context: "\(context) outputBias")
+    try compareActionArrays(lhs: lhs.valueWeights, rhs: rhs.valueWeights, tolerance: tolerance, context: "\(context) valueWeights")
+    try compareActionArrays(lhs: lhs.logStd, rhs: rhs.logStd, tolerance: tolerance, context: "\(context) logStd")
+    if abs(lhs.valueBias - rhs.valueBias) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) valueBias mismatch: expected \(lhs.valueBias), got \(rhs.valueBias)."
+        )
+    }
+}
+
+func makeSyntheticGradientParityBatch(
+    model: TrainableMLPActorCritic,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec
+) throws -> PPOBatch {
+    let observations: [Float] = [
+        0.20, -0.10, 0.05, 0.30,
+        -0.15, 0.25, -0.20, 0.10,
+        0.08, 0.18, 0.12, -0.16,
+        -0.24, -0.05, 0.19, 0.22,
+    ]
+    let initialEval = try model.evaluateGaussian(
+        for: observations,
+        taking: nil,
+        envCount: 4,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let actions: [Float] = [
+        initialEval.actionMeans[0] + 0.18,
+        initialEval.actionMeans[1] - 0.16,
+        initialEval.actionMeans[2] + 0.11,
+        initialEval.actionMeans[3] - 0.09,
+    ]
+    let newEval = try model.evaluateGaussian(
+        for: observations,
+        taking: actions,
+        envCount: 4,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let targetRatios: [Float] = [0.70, 1.30, 0.95, 1.05]
+    let oldLogProbs = zip(newEval.logProbs, targetRatios).map { newLogProb, ratio in
+        newLogProb - Float(log(Double(ratio)))
+    }
+
+    return try PPOBatch(
+        sampleCount: 4,
+        observationDim: observationSpec.elementsPerEnv,
+        actionDim: actionSpec.dimensionsPerEnv,
+        observations: observations,
+        actions: actions,
+        oldLogProbs: oldLogProbs,
+        advantages: [1.0, -0.8, 0.6, -0.5],
+        returns: [
+            newEval.values[0] + 0.6,
+            newEval.values[1] - 0.4,
+            newEval.values[2] + 0.2,
+            newEval.values[3] - 0.3,
+        ]
+    )
+}
+
+func validateMetalSGDTrainingStepParity(
+    gradientComputer: MetalMLPGradientComputer,
+    model: TrainableMLPActorCritic,
+    batch: PPOBatch,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    sgdConfig: SGDConfig,
+    tolerance: Float,
+    context: String
+) throws {
+    var cpuModel = model
+    let cpuStep = try cpuModel.applySGDStep(
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: sgdConfig
+    )
+    let gpuStep = try runMetalSGDTrainingStep(
+        gradientComputer: gradientComputer,
+        model: model,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: sgdConfig
+    )
+
+    try compareTrainableModels(
+        lhs: cpuModel,
+        rhs: gpuStep.updatedModel,
+        tolerance: tolerance,
+        context: "\(context) updated model"
+    )
+    try comparePPOLosses(
+        lhs: cpuStep.preLoss,
+        rhs: gpuStep.preLoss,
+        tolerance: tolerance,
+        context: "\(context) preLoss"
+    )
+    try comparePPOLosses(
+        lhs: cpuStep.postLoss,
+        rhs: gpuStep.postLoss,
+        tolerance: tolerance,
+        context: "\(context) postLoss"
+    )
+    if abs(cpuStep.parameterDeltaL1 - gpuStep.parameterDeltaL1) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) parameterDeltaL1 mismatch: expected \(cpuStep.parameterDeltaL1), got \(gpuStep.parameterDeltaL1)."
+        )
+    }
+    if !gpuStep.preLoss.totalLoss.isFinite || !gpuStep.postLoss.totalLoss.isFinite || gpuStep.parameterDeltaL1 <= tolerance {
+        throw EnvProjectError.validationFailed(message: "\(context) produced invalid Metal SGD step metrics.")
+    }
+}
+
+func computeModelBatchLoss(
+    model: TrainableMLPActorCritic,
+    batch: PPOBatch,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig
+) throws -> PPOLossBreakdown {
+    let evaluation = try model.evaluateGaussian(
+        for: batch.observations,
+        taking: batch.actions,
+        envCount: batch.sampleCount,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    return try computePPOLoss(
+        oldLogProbs: batch.oldLogProbs,
+        newLogProbs: evaluation.logProbs,
+        advantages: batch.advantages,
+        returns: batch.returns,
+        newValues: evaluation.values,
+        entropies: evaluation.entropies,
+        config: ppoConfig
+    )
+}
+
+func validatePersistentMetalSGDParity(
+    device: MTLDevice,
+    rootDir: String,
+    model: TrainableMLPActorCritic,
+    batch: PPOBatch,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    sgdConfig: SGDConfig,
+    steps: Int,
+    tolerance: Float,
+    context: String
+) throws {
+    if steps <= 0 {
+        throw EnvProjectError.validationFailed(message: "\(context) requires at least one step.")
+    }
+
+    var cpuModel = model
+    var cpuTotalDelta: Float = 0.0
+    let metalModel = try MetalTrainableMLPActorCritic(
+        device: device,
+        rootDir: rootDir,
+        model: model,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    var gpuTotalDelta: Float = 0.0
+
+    for _ in 0..<steps {
+        let cpuStep = try cpuModel.applySGDStep(
+            batch: batch,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec,
+            ppoConfig: ppoConfig,
+            sgdConfig: sgdConfig
+        )
+        let gpuStep = try metalModel.applySGDStep(
+            batch: batch,
+            ppoConfig: ppoConfig,
+            sgdConfig: sgdConfig
+        )
+        cpuTotalDelta += cpuStep.parameterDeltaL1
+        gpuTotalDelta += gpuStep.parameterDeltaL1
+    }
+
+    let gpuModel = metalModel.readModel()
+    try compareTrainableModels(
+        lhs: cpuModel,
+        rhs: gpuModel,
+        tolerance: tolerance,
+        context: "\(context) final model"
+    )
+    if abs(cpuTotalDelta - gpuTotalDelta) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) total parameter delta mismatch: expected \(cpuTotalDelta), got \(gpuTotalDelta)."
+        )
+    }
+
+    let cpuFinalLoss = try computeModelBatchLoss(
+        model: cpuModel,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig
+    )
+    let gpuFinalLoss = try computeModelBatchLoss(
+        model: gpuModel,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig
+    )
+    try comparePPOLosses(lhs: cpuFinalLoss, rhs: gpuFinalLoss, tolerance: tolerance, context: "\(context) final loss")
+}
+
+func validatePersistentMetalAdamParity(
+    device: MTLDevice,
+    rootDir: String,
+    model: TrainableMLPActorCritic,
+    batch: PPOBatch,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    adamConfig: AdamConfig,
+    steps: Int,
+    tolerance: Float,
+    context: String
+) throws {
+    if steps <= 0 {
+        throw EnvProjectError.validationFailed(message: "\(context) requires at least one step.")
+    }
+
+    var cpuModel = model
+    var cpuAdamState = AdamState(model: cpuModel)
+    var cpuTotalDelta: Float = 0.0
+    let metalModel = try MetalTrainableMLPActorCritic(
+        device: device,
+        rootDir: rootDir,
+        model: model,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    var gpuTotalDelta: Float = 0.0
+
+    for _ in 0..<steps {
+        let cpuStep = try cpuModel.applyAdamStep(
+            batch: batch,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec,
+            ppoConfig: ppoConfig,
+            adamState: &cpuAdamState,
+            adamConfig: adamConfig
+        )
+        let gpuStep = try metalModel.applyAdamStep(
+            batch: batch,
+            ppoConfig: ppoConfig,
+            adamConfig: adamConfig
+        )
+        cpuTotalDelta += cpuStep.parameterDeltaL1
+        gpuTotalDelta += gpuStep.parameterDeltaL1
+    }
+
+    let gpuModel = metalModel.readModel()
+    try compareTrainableModels(
+        lhs: cpuModel,
+        rhs: gpuModel,
+        tolerance: tolerance,
+        context: "\(context) final model"
+    )
+    if abs(cpuTotalDelta - gpuTotalDelta) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) total parameter delta mismatch: expected \(cpuTotalDelta), got \(gpuTotalDelta)."
+        )
+    }
+
+    let cpuFinalLoss = try computeModelBatchLoss(
+        model: cpuModel,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig
+    )
+    let gpuFinalLoss = try computeModelBatchLoss(
+        model: gpuModel,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig
+    )
+    try comparePPOLosses(lhs: cpuFinalLoss, rhs: gpuFinalLoss, tolerance: tolerance, context: "\(context) final loss")
+}
+
+func validatePersistentMetalAdamCheckpointRestart(
+    device: MTLDevice,
+    rootDir: String,
+    model: TrainableMLPActorCritic,
+    batch: PPOBatch,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    adamConfig: AdamConfig,
+    tolerance: Float,
+    context: String
+) throws {
+    let continuousModel = try MetalTrainableMLPActorCritic(
+        device: device,
+        rootDir: rootDir,
+        model: model,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    _ = try continuousModel.applyAdamStep(batch: batch, ppoConfig: ppoConfig, adamConfig: adamConfig)
+
+    let checkpointURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("metal-rl-checkpoints/persistent-metal-training-state.json")
+    let checkpoint = try MLPActorCriticTrainingStateCheckpoint(
+        metalModel: continuousModel,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    try saveTrainingStateCheckpoint(checkpoint, to: checkpointURL)
+    let restoredCheckpoint = try loadMLPActorCriticTrainingStateCheckpoint(from: checkpointURL)
+    let restored = try restoredCheckpoint.restoreModelAndAdamState()
+
+    try compareTrainableModels(
+        lhs: continuousModel.readModel(),
+        rhs: restored.model,
+        tolerance: tolerance,
+        context: "\(context) checkpoint model"
+    )
+    try compareAdamStates(
+        lhs: continuousModel.readAdamState(),
+        rhs: restored.adamState,
+        tolerance: tolerance,
+        context: "\(context) checkpoint adam state"
+    )
+
+    let restoredModel = try MetalTrainableMLPActorCritic(
+        device: device,
+        rootDir: rootDir,
+        model: restored.model,
+        adamState: restored.adamState,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+    let continuousSecondStep = try continuousModel.applyAdamStep(
+        batch: batch,
+        ppoConfig: ppoConfig,
+        adamConfig: adamConfig
+    )
+    let restoredSecondStep = try restoredModel.applyAdamStep(
+        batch: batch,
+        ppoConfig: ppoConfig,
+        adamConfig: adamConfig
+    )
+
+    try compareTrainableModels(
+        lhs: continuousSecondStep.model,
+        rhs: restoredSecondStep.model,
+        tolerance: tolerance,
+        context: "\(context) post-restart model"
+    )
+    try compareAdamStates(
+        lhs: continuousModel.readAdamState(),
+        rhs: restoredModel.readAdamState(),
+        tolerance: tolerance,
+        context: "\(context) post-restart adam state"
+    )
+    if abs(continuousSecondStep.parameterDeltaL1 - restoredSecondStep.parameterDeltaL1) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "\(context) post-restart delta mismatch: expected \(continuousSecondStep.parameterDeltaL1), got \(restoredSecondStep.parameterDeltaL1)."
+        )
+    }
+}
+
+func validateMetalGradientParity(
+    device: MTLDevice,
+    rootDir: String,
+    basePolicy: MLPPolicy,
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    ppoConfig: PPOConfig,
+    tolerance: Float
+) throws {
+    let model = TrainableMLPActorCritic(policy: basePolicy)
+    let batch = try makeSyntheticGradientParityBatch(
+        model: model,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec
+    )
+
+    let cpuGradients = try model.computeGradients(
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig
+    )
+    let metalComputer = try MetalMLPGradientComputer(device: device, rootDir: rootDir)
+    let gpuGradients = try metalComputer.computeGradients(
+        model: model,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig
+    )
+
+    try compareGradients(
+        lhs: cpuGradients,
+        rhs: gpuGradients,
+        tolerance: tolerance,
+        context: "cpu-vs-gpu mlp gradient parity"
+    )
+
+    let policyGradientMagnitude =
+        cpuGradients.outputWeights.reduce(Float.zero) { $0 + abs($1) } +
+        cpuGradients.outputBias.reduce(Float.zero) { $0 + abs($1) }
+    let valueGradientMagnitude =
+        cpuGradients.valueWeights.reduce(Float.zero) { $0 + abs($1) } +
+        abs(cpuGradients.valueBias)
+    if policyGradientMagnitude <= tolerance || valueGradientMagnitude <= tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "Synthetic gradient parity case did not exercise both policy and value gradients."
+        )
+    }
+
+    var cpuUpdatedModel = model
+    let cpuStep = try cpuUpdatedModel.applySGDStep(
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: SGDConfig(learningRate: 0.02)
+    )
+    let gpuStep = try metalComputer.applySGDStep(
+        model: model,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: SGDConfig(learningRate: 0.02)
+    )
+    try compareTrainableModels(
+        lhs: cpuUpdatedModel,
+        rhs: gpuStep.model,
+        tolerance: tolerance,
+        context: "cpu-vs-gpu mlp sgd update parity"
+    )
+    if abs(cpuStep.parameterDeltaL1 - gpuStep.parameterDeltaL1) > tolerance {
+        throw EnvProjectError.validationFailed(
+            message: "cpu-vs-gpu mlp sgd update delta mismatch: expected \(cpuStep.parameterDeltaL1), got \(gpuStep.parameterDeltaL1)."
+        )
+    }
+    try validateMetalSGDTrainingStepParity(
+        gradientComputer: metalComputer,
+        model: model,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: SGDConfig(learningRate: 0.02),
+        tolerance: tolerance,
+        context: "synthetic metal sgd training step"
+    )
+    try validatePersistentMetalSGDParity(
+        device: device,
+        rootDir: rootDir,
+        model: model,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: SGDConfig(learningRate: 0.01),
+        steps: 3,
+        tolerance: tolerance,
+        context: "synthetic persistent metal sgd"
+    )
+    try validatePersistentMetalAdamParity(
+        device: device,
+        rootDir: rootDir,
+        model: model,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        adamConfig: AdamConfig(learningRate: 0.001, beta1: 0.9, beta2: 0.999, epsilon: 1e-8),
+        steps: 3,
+        tolerance: 1e-4,
+        context: "synthetic persistent metal adam"
+    )
+    try validatePersistentMetalAdamCheckpointRestart(
+        device: device,
+        rootDir: rootDir,
+        model: model,
+        batch: batch,
+        observationSpec: observationSpec,
+        actionSpec: actionSpec,
+        ppoConfig: ppoConfig,
+        adamConfig: AdamConfig(learningRate: 0.001, beta1: 0.9, beta2: 0.999, epsilon: 1e-8),
+        tolerance: 1e-4,
+        context: "synthetic persistent metal adam checkpoint restart"
+    )
+
+    var badLogStdModel = model
+    badLogStdModel.logStd = []
+    try expectValidationFailure("metal gradient invalid logStd") {
+        _ = try metalComputer.computeGradients(
+            model: badLogStdModel,
+            batch: batch,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec,
+            ppoConfig: ppoConfig
+        )
+    }
+    try expectValidationFailure("metal sgd invalid learning rate") {
+        _ = try metalComputer.applySGDStep(
+            model: model,
+            batch: batch,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec,
+            ppoConfig: ppoConfig,
+            sgdConfig: SGDConfig(learningRate: 0.0)
+        )
+    }
+    try expectValidationFailure("persistent metal adam invalid learning rate") {
+        let persistentModel = try MetalTrainableMLPActorCritic(
+            device: device,
+            rootDir: rootDir,
+            model: model,
+            observationSpec: observationSpec,
+            actionSpec: actionSpec
+        )
+        _ = try persistentModel.applyAdamStep(
+            batch: batch,
+            ppoConfig: ppoConfig,
+            adamConfig: AdamConfig(learningRate: 0.0, beta1: 0.9, beta2: 0.999, epsilon: 1e-8)
+        )
+    }
+    try expectValidationFailure("persistent metal adam checkpoint invalid state") {
+        var badState = AdamState(model: model)
+        badState.inputWeightsM.removeLast()
+        _ = try AdamStateCheckpoint(state: badState, model: model)
+    }
+    try expectValidationFailure("zero-sample PPOBatch") {
+        _ = try PPOBatch(
+            sampleCount: 0,
+            observationDim: observationSpec.elementsPerEnv,
+            actionDim: actionSpec.dimensionsPerEnv,
+            observations: [],
+            actions: [],
+            oldLogProbs: [],
+            advantages: [],
+            returns: []
+        )
     }
 }
 
@@ -902,6 +1605,15 @@ func runValidationHarness() throws {
         ppoConfig: ppoConfig,
         tolerance: tolerance
     )
+    try validateMetalGradientParity(
+        device: device,
+        rootDir: rootDir,
+        basePolicy: mlpPolicy,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        tolerance: 1e-4
+    )
 
     let baseline = try runValidatedRollout(
         driver: driver,
@@ -1278,6 +1990,101 @@ func runValidationHarness() throws {
         ppoConfig: ppoConfig,
         tolerance: tolerance
     )
+    try validateMetalSGDTrainingStepParity(
+        gradientComputer: MetalMLPGradientComputer(device: device, rootDir: rootDir),
+        model: TrainableMLPActorCritic(policy: mlpPolicy),
+        batch: try makePPOBatch(storage: mlpActorCriticStorage, estimates: cpuGAE),
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: SGDConfig(learningRate: 0.001),
+        tolerance: 1e-4,
+        context: "real rollout metal sgd training step"
+    )
+    try validatePersistentMetalSGDParity(
+        device: device,
+        rootDir: rootDir,
+        model: TrainableMLPActorCritic(policy: mlpPolicy),
+        batch: try makePPOBatch(storage: mlpActorCriticStorage, estimates: cpuGAE),
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        sgdConfig: SGDConfig(learningRate: 0.0005),
+        steps: 3,
+        tolerance: 1e-4,
+        context: "real rollout persistent metal sgd"
+    )
+    try validatePersistentMetalAdamParity(
+        device: device,
+        rootDir: rootDir,
+        model: TrainableMLPActorCritic(policy: mlpPolicy),
+        batch: try makePPOBatch(storage: mlpActorCriticStorage, estimates: cpuGAE),
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        adamConfig: AdamConfig(learningRate: 0.0005, beta1: 0.9, beta2: 0.999, epsilon: 1e-8),
+        steps: 3,
+        tolerance: 1e-4,
+        context: "real rollout persistent metal adam"
+    )
+    try validatePersistentMetalAdamCheckpointRestart(
+        device: device,
+        rootDir: rootDir,
+        model: TrainableMLPActorCritic(policy: mlpPolicy),
+        batch: try makePPOBatch(storage: mlpActorCriticStorage, estimates: cpuGAE),
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        ppoConfig: ppoConfig,
+        adamConfig: AdamConfig(learningRate: 0.0005, beta1: 0.9, beta2: 0.999, epsilon: 1e-8),
+        tolerance: 1e-4,
+        context: "real rollout persistent metal adam checkpoint restart"
+    )
+
+    let persistentSGDConfig = CPUTrainingLoopConfig(
+        iterations: 2,
+        rolloutHorizon: 8,
+        epochsPerIteration: 2,
+        miniBatchSize: 256,
+        resetSeed: resetSeed,
+        shuffleSeed: 0x5EED_1234,
+        gaeConfig: gaeConfig,
+        ppoConfig: ppoConfig,
+        optimizer: .sgd(SGDConfig(learningRate: 0.0005))
+    )
+    var cpuSGDLoopModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let cpuSGDLoop = try runCPUTrainingLoop(
+        driver: driver,
+        model: &cpuSGDLoopModel,
+        config: persistentSGDConfig
+    )
+    var persistentMetalSGDModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let persistentMetalSGDPolicy = try makeReferenceMetalMLPPolicy(
+        device: device,
+        rootDir: rootDir,
+        envCount: count,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let persistentMetalSGDLoop = try runPersistentMetalTrainingLoop(
+        device: device,
+        rootDir: rootDir,
+        driver: driver,
+        model: &persistentMetalSGDModel,
+        gpuPolicy: persistentMetalSGDPolicy,
+        config: persistentSGDConfig
+    )
+    try compareTrainingRuns(
+        lhs: cpuSGDLoop,
+        rhs: persistentMetalSGDLoop,
+        tolerance: 1e-4,
+        context: "persistent metal sgd training loop parity"
+    )
+    try compareTrainableModels(
+        lhs: cpuSGDLoopModel,
+        rhs: persistentMetalSGDModel,
+        tolerance: 1e-4,
+        context: "persistent metal sgd training loop final model"
+    )
 
     let trainingConfig = CPUTrainingLoopConfig(
         iterations: 3,
@@ -1297,6 +2104,35 @@ func runValidationHarness() throws {
         config: trainingConfig
     )
     try validateTrainingRun(summary: trainingRun, tolerance: tolerance, context: "cpu training loop")
+
+    var persistentMetalAdamModel = TrainableMLPActorCritic(policy: mlpPolicy)
+    let persistentMetalAdamPolicy = try makeReferenceMetalMLPPolicy(
+        device: device,
+        rootDir: rootDir,
+        envCount: count,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec
+    )
+    let persistentMetalAdamLoop = try runPersistentMetalTrainingLoop(
+        device: device,
+        rootDir: rootDir,
+        driver: driver,
+        model: &persistentMetalAdamModel,
+        gpuPolicy: persistentMetalAdamPolicy,
+        config: trainingConfig
+    )
+    try compareTrainingRuns(
+        lhs: trainingRun,
+        rhs: persistentMetalAdamLoop,
+        tolerance: 1e-4,
+        context: "persistent metal adam training loop parity"
+    )
+    try compareTrainableModels(
+        lhs: trainingModel,
+        rhs: persistentMetalAdamModel,
+        tolerance: 1e-4,
+        context: "persistent metal adam training loop final model"
+    )
 
     var trainingReplayModel = TrainableMLPActorCritic(policy: mlpPolicy)
     let trainingReplay = try runCPUTrainingLoop(
@@ -1382,6 +2218,16 @@ func runValidationHarness() throws {
     )
     try ensureDifferentTrainingRuns(lhs: hybridTrainingRun, rhs: hybridAlternateRun, tolerance: replayTolerance, context: "alternate hybrid training loop seed")
 
+    try validateTrainingCheckpointRoundTrip(
+        model: hybridCpuModel,
+        gpuPolicy: hybridGpuPolicy,
+        observations: policyProbeBatch.observations,
+        envCount: driver.envCount,
+        observationSpec: driver.observationSpec,
+        actionSpec: driver.actionSpec,
+        tolerance: tolerance
+    )
+
     print("CartPole validation harness passed")
     print("device: \(device.name)")
     print("environmentModule: CartPoleMetalEnvironment")
@@ -1420,8 +2266,18 @@ func runValidationHarness() throws {
     print("cpu and gpu ppo losses matched")
     print("manual backward/update step reduced loss")
     print("adam step reduced loss")
+    print("cpu and gpu mlp gradients matched after gpu reduction on synthetic PPO batch")
+    print("cpu and gpu mlp sgd updates matched on synthetic PPO batch")
+    print("cpu and gpu mlp sgd training steps matched on synthetic and real PPO batches")
+    print("persistent gpu mlp sgd updates matched repeated cpu sgd on synthetic and real PPO batches")
+    print("persistent gpu mlp adam updates matched repeated cpu adam on synthetic and real PPO batches")
+    print("persistent gpu adam checkpoint restart matched uninterrupted gpu adam updates")
+    print("persistent gpu sgd training loop matched cpu sgd training loop")
+    print("persistent gpu adam training loop matched cpu adam training loop")
+    print("persistent gpu trainable buffers synced directly into rollout policy buffers")
     print("cpu training loop replay matched exactly")
     print("hybrid gpu-rollout training loop replay matched exactly")
+    print("trainable actor-critic checkpoint round-trip matched and restored gpu policy")
     print("rollout storage replay matched exactly")
     for line in baseline.sampleLines {
         print(line)

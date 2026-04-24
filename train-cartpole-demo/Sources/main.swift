@@ -20,6 +20,20 @@ func trainingEnvUInt32(_ name: String, default defaultValue: UInt32) -> UInt32 {
     return defaultValue
 }
 
+enum CartPoleTrainingBackend: String {
+    case persistentGPUAdam = "persistent-gpu-adam"
+    case hybridCPUAdam = "hybrid-cpu-adam"
+
+    static func parse(_ rawValue: String) throws -> CartPoleTrainingBackend {
+        guard let backend = CartPoleTrainingBackend(rawValue: rawValue) else {
+            throw EnvProjectError.validationFailed(
+                message: "Unsupported TRAIN_BACKEND '\(rawValue)'. Use persistent-gpu-adam or hybrid-cpu-adam."
+            )
+        }
+        return backend
+    }
+}
+
 func runTrainingDemo() throws {
     guard let device = MTLCreateSystemDefaultDevice() else {
         throw EnvProjectError.noMetalDevice
@@ -34,6 +48,7 @@ func runTrainingDemo() throws {
     let miniBatchSize = trainingEnvInt("TRAIN_MINIBATCH", default: 256)
     let resetSeed = trainingEnvUInt32("TRAIN_RESET_SEED", default: 0x1234_5678)
     let shuffleSeed = trainingEnvUInt32("TRAIN_SHUFFLE_SEED", default: 0xA5A5_1357)
+    let backend = try CartPoleTrainingBackend.parse(env["TRAIN_BACKEND"] ?? CartPoleTrainingBackend.persistentGPUAdam.rawValue)
 
     let cartPoleParams = CartPoleParams(
         envCount: UInt32(envCount),
@@ -55,7 +70,7 @@ func runTrainingDemo() throws {
         resetSeed: resetSeed,
         initialStates: makeCartPoleInitialStates(count: envCount)
     )
-    var cpuModel = TrainableMLPActorCritic(
+    var trainableModel = TrainableMLPActorCritic(
         policy: try makeReferenceMLPPolicy(
             observationSpec: driver.observationSpec,
             actionSpec: driver.actionSpec
@@ -81,15 +96,43 @@ func runTrainingDemo() throws {
         optimizer: .adam(AdamConfig(learningRate: 0.001, beta1: 0.9, beta2: 0.999, epsilon: 1e-8))
     )
 
-    let summary = try runHybridTrainingLoop(
-        driver: driver,
-        cpuModel: &cpuModel,
-        gpuPolicy: gpuPolicy,
-        config: config
-    )
+    let summary: CPUTrainingRunSummary
+    switch backend {
+    case .persistentGPUAdam:
+        summary = try runPersistentMetalTrainingLoop(
+            device: device,
+            rootDir: rootDir,
+            driver: driver,
+            model: &trainableModel,
+            gpuPolicy: gpuPolicy,
+            config: config
+        )
+        try gpuPolicy.load(model: trainableModel)
+    case .hybridCPUAdam:
+        summary = try runHybridTrainingLoop(
+            driver: driver,
+            cpuModel: &trainableModel,
+            gpuPolicy: gpuPolicy,
+            config: config
+        )
+        try gpuPolicy.load(model: trainableModel)
+    }
+
+    var checkpointPath: String? = nil
+    if let rawPath = env["TRAIN_CHECKPOINT_PATH"], !rawPath.isEmpty {
+        let checkpointURL = URL(fileURLWithPath: rawPath)
+        let checkpoint = try MLPActorCriticCheckpoint(
+            model: trainableModel,
+            observationSpec: driver.observationSpec,
+            actionSpec: driver.actionSpec
+        )
+        try saveCheckpoint(checkpoint, to: checkpointURL)
+        checkpointPath = checkpointURL.path
+    }
 
     print("CartPole training demo completed")
     print("device: \(device.name)")
+    print("backend: \(backend.rawValue)")
     print("envCount: \(envCount)")
     print("iterations: \(iterations)")
     print("rolloutHorizon: \(horizon)")
@@ -100,6 +143,9 @@ func runTrainingDemo() throws {
     print("initialMeanReward: \(summary.initialMeanReward)")
     print("finalMeanReward: \(summary.finalMeanReward)")
     print("totalParameterDeltaL1: \(summary.totalParameterDeltaL1)")
+    if let checkpointPath {
+        print("checkpointPath: \(checkpointPath)")
+    }
     for line in makeTrainingSummaryLines(summary: summary) {
         print(line)
     }

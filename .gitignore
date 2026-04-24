@@ -1,3 +1,4 @@
 .DS_Store
 .tmp-home/
 metal-smoke-check/.build/
+train-cartpole-demo/.build/

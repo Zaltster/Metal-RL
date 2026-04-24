@@ -1,14 +1,15 @@
 # MLP Backward Pseudocode
 
-This document describes the first training step for the repository:
+This document describes the first training-gradient path for the repository:
 
-- CPU only
+- CPU reference path plus a first Metal parity kernel
 - one-hidden-layer actor-critic MLP
 - hand-derived gradients
-- simple SGD
+- simple SGD and Adam
+- host-side checkpoint round-trip for trained weights and persistent GPU Adam state
 - no custom autodiff engine yet
 
-The goal is to prove that the current PPO math can actually drive parameter updates before moving gradients or optimizer state to Metal.
+The goal is to prove that the current PPO math can drive parameter updates, then reproduce the same gradient and optimizer math in Metal before expanding the GPU-native training path.
 
 ## Model
 
@@ -118,24 +119,63 @@ After summing gradients over the batch:
 param = param - learningRate * grad
 ```
 
+## First Metal Gradient Kernel
+
+The current Metal milestone computes per-sample gradients:
+
+```text
+sampleGrad[i] = gradient contribution for sample i
+```
+
+The current reduction kernel sums those per-sample gradient buffers on GPU:
+
+```text
+grad = sum_i sampleGrad[i]
+```
+
+The current Metal SGD update applies the same rule to GPU parameter buffers:
+
+```text
+param_gpu = param_gpu - learningRate * grad_gpu
+```
+
+The persistent Metal Adam update keeps first- and second-moment buffers resident beside the parameter buffers:
+
+```text
+m_gpu = beta1 * m_gpu + (1 - beta1) * grad_gpu
+v_gpu = beta2 * v_gpu + (1 - beta2) * grad_gpu^2
+mHat = m_gpu / (1 - beta1^t)
+vHat = v_gpu / (1 - beta2^t)
+param_gpu = param_gpu - learningRate * mHat / (sqrt(vHat) + epsilon)
+```
+
+The current single-step helper computes pre/post PPO loss around the Metal SGD update and compares the result against the CPU SGD step on both synthetic and real rollout PPO batches. A persistent Metal trainable model can also keep parameter and Adam state buffers resident across repeated optimizer updates and match repeated CPU SGD or Adam. A tiny persistent-GPU optimizer training loop is validated against the CPU SGD and Adam loops, rollout policy sync copies directly between Metal buffers, and a training-state checkpoint can restore GPU parameters plus Adam state before the next update.
+
 ## Validation Plan
 
 1. Build a synthetic PPO batch with actions not equal to the current means.
-2. Compute loss before the update.
-3. Apply one or a few SGD steps.
-4. Verify:
+2. Choose old log-probabilities that exercise nonzero unclipped policy-gradient branches.
+3. Compare CPU gradients against Metal per-sample gradients reduced by the Metal reduction kernel.
+4. Compare CPU-updated weights against Metal-updated weights after one SGD step.
+5. Compare CPU and Metal single-step pre/post losses on synthetic and real rollout PPO batches.
+6. Compare repeated CPU SGD against repeated persistent-buffer Metal SGD.
+7. Compare repeated CPU Adam against repeated persistent-buffer Metal Adam.
+8. Compare tiny CPU SGD and Adam training loops against persistent-GPU optimizer training loops.
+9. Save and restore persistent Metal parameters plus Adam state, then compare the next Adam step against the uninterrupted path.
+10. Copy persistent trainable GPU buffers directly into rollout policy GPU buffers before rollout.
+11. Compute loss before the update.
+12. Apply one or a few optimizer steps.
+13. Verify:
    - parameters changed
    - forward outputs changed
    - loss decreased on the synthetic batch
-5. Repeat on the real stored cartpole rollout batch.
+14. Repeat on the real stored cartpole rollout batch.
 
 ## What This Does Not Do Yet
 
 This step does not include:
 
-- Adam or momentum
-- minibatch shuffling
 - gradient clipping
 - value clipping
-- Metal-side backprop
+- production resume flow around persistent GPU optimizer-state checkpoints
 - a general autodiff engine
