@@ -4,14 +4,42 @@ func writeHumanoidHTMLReplay(
     frames: [HumanoidReplayFrame],
     linkNames: [String],
     parentLinkIndices: [Int],
+    collisionShapes: [HumanoidCollisionGPUConstants],
     to url: URL,
     title: String
 ) throws {
     if frames.isEmpty {
         throw EnvProjectError.validationFailed(message: "Humanoid replay requires at least one frame.")
     }
-    if frames[0].linkPositions.count != linkNames.count * 3 {
-        throw EnvProjectError.validationFailed(message: "Humanoid replay link position shape mismatch.")
+    let expectedLinkPositionCount = linkNames.count * 3
+    let expectedLinkCount = linkNames.count
+    if parentLinkIndices.count != expectedLinkCount {
+        throw EnvProjectError.validationFailed(message: "Humanoid replay parent index shape mismatch.")
+    }
+    if collisionShapes.count != expectedLinkCount {
+        throw EnvProjectError.validationFailed(message: "Humanoid replay collision shape count mismatch.")
+    }
+    for (index, frame) in frames.enumerated() {
+        if frame.linkPositions.count != expectedLinkPositionCount {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid replay frame \(index) link position shape mismatch."
+            )
+        }
+        if frame.contactPoints.count != expectedLinkPositionCount ||
+            frame.contactNormals.count != expectedLinkPositionCount ||
+            frame.contactPenetrations.count != expectedLinkCount {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid replay frame \(index) contact shape mismatch."
+            )
+        }
+        if !frame.linkPositions.allSatisfy({ $0.isFinite }) ||
+            !frame.contactPoints.allSatisfy({ $0.isFinite }) ||
+            !frame.contactNormals.allSatisfy({ $0.isFinite }) ||
+            !frame.contactPenetrations.allSatisfy({ $0.isFinite }) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid replay frame \(index) contains non-finite replay data."
+            )
+        }
     }
 
     let escapedTitle = title
@@ -22,16 +50,43 @@ func writeHumanoidHTMLReplay(
 
     let namesJSON = linkNames.map { "\"\($0)\"" }.joined(separator: ",")
     let parentsJSON = parentLinkIndices.map(String.init).joined(separator: ",")
+    let shapeJSON = collisionShapes.map { shape in
+        String(
+            format: "{\"t\":%u,\"tr\":[%.8g,%.8g,%.8g],\"q\":[%.8g,%.8g,%.8g,%.8g],\"p\":[%.8g,%.8g,%.8g]}",
+            shape.type,
+            shape.translationX,
+            shape.translationY,
+            shape.translationZ,
+            shape.rotationX,
+            shape.rotationY,
+            shape.rotationZ,
+            shape.rotationW,
+            shape.paramX,
+            shape.paramY,
+            shape.paramZ
+        )
+    }.joined(separator: ",")
     let frameJSON = frames.map { frame in
         let positions = frame.linkPositions.map { String(format: "%.8g", $0) }.joined(separator: ",")
+        let contactPoints = frame.contactPoints.map { String(format: "%.8g", $0) }.joined(separator: ",")
+        let contactNormals = frame.contactNormals.map { String(format: "%.8g", $0) }.joined(separator: ",")
+        let contactPenetrations = frame.contactPenetrations.map { String(format: "%.8g", $0) }.joined(separator: ",")
         return String(
-            format: "{\"p\":[%@],\"r\":%.8g,\"d\":%u,\"rc\":%u}",
+            format: "{\"p\":[%@],\"cp\":[%@],\"cn\":[%@],\"pen\":[%@],\"r\":%.8g,\"d\":%u,\"rc\":%u}",
             positions,
+            contactPoints,
+            contactNormals,
+            contactPenetrations,
             frame.reward,
             frame.done,
             frame.resetCount
         )
     }.joined(separator: ",\n")
+    let replayJSON = """
+    {"title":"\(escapedTitle)","linkNames":[\(namesJSON)],"parent":[\(parentsJSON)],"collisionShapes":[\(shapeJSON)],"frames":[
+    \(frameJSON)
+    ]}
+    """
 
     let html = """
     <!doctype html>
@@ -63,11 +118,11 @@ func writeHumanoidHTMLReplay(
         </div>
       </main>
       <script>
-        const linkNames = [\(namesJSON)];
-        const parent = [\(parentsJSON)];
-        const frames = [
-    \(frameJSON)
-        ];
+        const replay = \(replayJSON);
+        const linkNames = replay.linkNames;
+        const parent = replay.parent;
+        const collisionShapes = replay.collisionShapes;
+        const frames = replay.frames;
         const canvas = document.getElementById("scene");
         const ctx = canvas.getContext("2d");
         const frameEl = document.getElementById("frame");
@@ -79,16 +134,110 @@ func writeHumanoidHTMLReplay(
         let frameIndex = 0;
         let playing = true;
         let last = 0;
+        const viewBounds = computeViewBounds();
 
         function point(frame, link) {
           const i = link * 3;
           return { x: frame.p[i], y: frame.p[i + 1], z: frame.p[i + 2] };
         }
 
+        function computeViewBounds() {
+          const bounds = {
+            front: { minA: Infinity, maxA: -Infinity, minZ: Infinity, maxZ: -Infinity },
+            side: { minA: Infinity, maxA: -Infinity, minZ: Infinity, maxZ: -Infinity }
+          };
+          for (const frame of frames) {
+            for (let i = 0; i < linkNames.length; i++) {
+              const p = point(frame, i);
+              bounds.front.minA = Math.min(bounds.front.minA, p.y);
+              bounds.front.maxA = Math.max(bounds.front.maxA, p.y);
+              bounds.side.minA = Math.min(bounds.side.minA, p.x);
+              bounds.side.maxA = Math.max(bounds.side.maxA, p.x);
+              bounds.front.minZ = Math.min(bounds.front.minZ, p.z);
+              bounds.front.maxZ = Math.max(bounds.front.maxZ, p.z);
+              bounds.side.minZ = Math.min(bounds.side.minZ, p.z);
+              bounds.side.maxZ = Math.max(bounds.side.maxZ, p.z);
+            }
+          }
+          for (const key of ["front", "side"]) {
+            const b = bounds[key];
+            if (!Number.isFinite(b.minA) || !Number.isFinite(b.maxA) || !Number.isFinite(b.minZ) || !Number.isFinite(b.maxZ)) {
+              b.minA = -1; b.maxA = 1; b.minZ = 0; b.maxZ = 2;
+            }
+            const padA = Math.max(0.25, (b.maxA - b.minA) * 0.20);
+            const padZ = Math.max(0.25, (b.maxZ - b.minZ) * 0.20);
+            b.minA -= padA;
+            b.maxA += padA;
+            b.minZ = Math.min(0, b.minZ - padZ);
+            b.maxZ += padZ;
+            b.scale = Math.min(440 / Math.max(0.1, b.maxA - b.minA), 500 / Math.max(0.1, b.maxZ - b.minZ));
+          }
+          return bounds;
+        }
+
         function project(p, view) {
-          const scale = 260;
-          if (view === "front") return { x: 270 + p.y * scale, y: 560 - p.z * scale };
-          return { x: 810 + p.x * scale, y: 560 - p.z * scale };
+          const b = viewBounds[view];
+          const a = view === "front" ? p.y : p.x;
+          const left = view === "front" ? 50 : 600;
+          const bottom = 610;
+          return { x: left + (a - b.minA) * b.scale, y: bottom - (p.z - b.minZ) * b.scale };
+        }
+
+        function shapeRadius(shape, view) {
+          if (shape.t === 1) return view === "front" ? Math.max(shape.p[1], shape.p[2]) : Math.max(shape.p[0], shape.p[2]);
+          if (shape.t === 2) return shape.p[0];
+          if (shape.t === 3 || shape.t === 4) return shape.p[0] + shape.p[1] * 0.35;
+          return 0;
+        }
+
+        function drawCollisionShapes(frame, view) {
+          ctx.save();
+          ctx.strokeStyle = "#64748b";
+          ctx.fillStyle = "rgba(20, 184, 166, 0.10)";
+          ctx.lineWidth = 1.5;
+          for (let i = 0; i < linkNames.length; i++) {
+            const shape = collisionShapes[i];
+            if (!shape || shape.t === 0) continue;
+            const center = point(frame, i);
+            const p = project(center, view);
+            const r = Math.max(3, shapeRadius(shape, view) * viewBounds[view].scale);
+            ctx.beginPath();
+            if (shape.t === 1) {
+              ctx.rect(p.x - r, p.y - r, r * 2, r * 2);
+            } else {
+              ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+            }
+            ctx.fill();
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        function drawContacts(frame, view) {
+          ctx.save();
+          ctx.strokeStyle = "#dc2626";
+          ctx.fillStyle = "#dc2626";
+          ctx.lineWidth = 2;
+          for (let i = 0; i < linkNames.length; i++) {
+            if (frame.pen[i] <= 0) continue;
+            const base = i * 3;
+            const point3 = { x: frame.cp[base], y: frame.cp[base + 1], z: frame.cp[base + 2] };
+            const normal3 = { x: frame.cn[base], y: frame.cn[base + 1], z: frame.cn[base + 2] };
+            const a = project(point3, view);
+            const b = project({
+              x: point3.x + normal3.x * 0.12,
+              y: point3.y + normal3.y * 0.12,
+              z: point3.z + normal3.z * 0.12
+            }, view);
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+          ctx.restore();
         }
 
         function drawView(frame, view, label) {
@@ -102,6 +251,8 @@ func writeHumanoidHTMLReplay(
           ctx.moveTo(view === "front" ? 30 : 580, y);
           ctx.lineTo(view === "front" ? 520 : 1050, y);
           ctx.stroke();
+
+          drawCollisionShapes(frame, view);
 
           for (let i = 0; i < linkNames.length; i++) {
             const pi = parent[i];
@@ -124,6 +275,7 @@ func writeHumanoidHTMLReplay(
             ctx.arc(p.x, p.y, i === 0 ? 7 : 5, 0, Math.PI * 2);
             ctx.fill();
           }
+          drawContacts(frame, view);
         }
 
         function draw() {
@@ -167,5 +319,6 @@ func writeHumanoidHTMLReplay(
         withIntermediateDirectories: true
     )
     try html.write(to: url, atomically: true, encoding: .utf8)
+    let jsonURL = url.deletingPathExtension().appendingPathExtension("json")
+    try replayJSON.write(to: jsonURL, atomically: true, encoding: .utf8)
 }
-

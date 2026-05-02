@@ -24,6 +24,13 @@ final class HumanoidMetalEnvironment {
     private let groundContactPipeline: MTLComputePipelineState
     private let selfContactPipeline: MTLComputePipelineState
     private let groundContactSolvePipeline: MTLComputePipelineState
+    private let selfContactSolvePipeline: MTLComputePipelineState
+    private let groundContactPositionPipeline: MTLComputePipelineState
+    private let selfContactPositionPipeline: MTLComputePipelineState
+    private let groundContactWarmStartPipeline: MTLComputePipelineState
+    private let selfContactWarmStartPipeline: MTLComputePipelineState
+    private let selectedSelfContactPositionPipeline: MTLComputePipelineState
+    private let selectedSelfContactSolvePipeline: MTLComputePipelineState
     private let rootSyncPipeline: MTLComputePipelineState
     private let fkPipeline: MTLComputePipelineState
     private let outputPipeline: MTLComputePipelineState
@@ -54,6 +61,10 @@ final class HumanoidMetalEnvironment {
     private let selfContactPointBuffer: MTLBuffer
     private let selfContactNormalBuffer: MTLBuffer
     private let selfContactPenetrationBuffer: MTLBuffer
+    private let groundContactNormalImpulseBuffer: MTLBuffer
+    private let groundContactFrictionImpulseBuffer: MTLBuffer
+    private let selfContactNormalImpulseBuffer: MTLBuffer
+    private let selfContactFrictionImpulseBuffer: MTLBuffer
     private let observationBuffer: MTLBuffer
     private let rewardBuffer: MTLBuffer
     private let doneBuffer: MTLBuffer
@@ -72,8 +83,11 @@ final class HumanoidMetalEnvironment {
         let report = try validateHumanoidRobotSpec(spec)
         let layout = report.dofLayout
         let linkConstants = try makeHumanoidLinkConstants(spec: spec)
-        let collisionConstants = makeHumanoidCollisionConstants(spec: spec)
-        let collisionPairs = makeHumanoidCollisionPairConstants(linkCount: spec.links.count)
+        let collisionConstants = try makeHumanoidCollisionConstants(
+            spec: spec,
+            baseURL: specURL.deletingLastPathComponent()
+        )
+        let collisionPairs = makeHumanoidCollisionPairConstants(spec: spec)
         let jointConstants = try makeHumanoidJointConstants(spec: spec, layout: layout)
         let defaultJointPositions = try makeHumanoidDefaultJointPositions(spec: spec, layout: layout)
 
@@ -109,7 +123,8 @@ final class HumanoidMetalEnvironment {
             constraintBaumgarte: 0.2,
             contactBaumgarte: 0.2,
             contactFriction: 0.8,
-            reserved: 0
+            contactRestitution: 0.0,
+            selectedSelfCollisionPair: 0
         )
 
         guard let commandQueue = device.makeCommandQueue() else {
@@ -130,13 +145,23 @@ final class HumanoidMetalEnvironment {
         self.groundContactPipeline = try makePipeline(device: device, library: library, name: "humanoid_detect_ground_contacts")
         self.selfContactPipeline = try makePipeline(device: device, library: library, name: "humanoid_detect_self_contacts")
         self.groundContactSolvePipeline = try makePipeline(device: device, library: library, name: "humanoid_solve_ground_contacts")
+        self.selfContactSolvePipeline = try makePipeline(device: device, library: library, name: "humanoid_solve_self_contacts")
+        self.groundContactPositionPipeline = try makePipeline(device: device, library: library, name: "humanoid_correct_ground_contact_positions")
+        self.selfContactPositionPipeline = try makePipeline(device: device, library: library, name: "humanoid_correct_self_contact_positions")
+        self.groundContactWarmStartPipeline = try makePipeline(device: device, library: library, name: "humanoid_warm_start_ground_contacts")
+        self.selfContactWarmStartPipeline = try makePipeline(device: device, library: library, name: "humanoid_warm_start_self_contacts")
+        self.selectedSelfContactPositionPipeline = try makePipeline(device: device, library: library, name: "humanoid_correct_selected_self_contact_positions")
+        self.selectedSelfContactSolvePipeline = try makePipeline(device: device, library: library, name: "humanoid_solve_selected_self_contact")
         self.rootSyncPipeline = try makePipeline(device: device, library: library, name: "humanoid_sync_root_from_pelvis")
         self.fkPipeline = try makePipeline(device: device, library: library, name: "humanoid_forward_kinematics")
         self.outputPipeline = try makePipeline(device: device, library: library, name: "humanoid_write_outputs")
 
         let linkConstantsLength = MemoryLayout<HumanoidLinkGPUConstants>.stride * linkConstants.count
         let collisionConstantsLength = MemoryLayout<HumanoidCollisionGPUConstants>.stride * collisionConstants.count
-        let collisionPairConstantsLength = MemoryLayout<HumanoidCollisionPairGPUConstants>.stride * collisionPairs.count
+        let collisionPairConstantsLength = max(
+            MemoryLayout<HumanoidCollisionPairGPUConstants>.stride,
+            MemoryLayout<HumanoidCollisionPairGPUConstants>.stride * collisionPairs.count
+        )
         let jointConstantsLength = MemoryLayout<HumanoidJointGPUConstants>.stride * jointConstants.count
         let paramsLength = MemoryLayout<HumanoidEnvParams>.stride
         let rootPositionLength = MemoryLayout<Float>.stride * envCount * 3
@@ -151,8 +176,12 @@ final class HumanoidMetalEnvironment {
         let jointErrorLength = MemoryLayout<Float>.stride * envCount * spec.joints.count
         let contactVectorLength = MemoryLayout<Float>.stride * envCount * spec.links.count * 3
         let contactScalarLength = MemoryLayout<Float>.stride * envCount * spec.links.count
-        let selfContactVectorLength = MemoryLayout<Float>.stride * envCount * collisionPairs.count * 3
-        let selfContactScalarLength = MemoryLayout<Float>.stride * envCount * collisionPairs.count
+        let selfContactVectorLength = max(MemoryLayout<Float>.stride, MemoryLayout<Float>.stride * envCount * collisionPairs.count * 3)
+        let selfContactScalarLength = max(MemoryLayout<Float>.stride, MemoryLayout<Float>.stride * envCount * collisionPairs.count)
+        let groundNormalImpulseLength = MemoryLayout<Float>.stride * envCount * spec.links.count
+        let groundFrictionImpulseLength = MemoryLayout<Float>.stride * envCount * spec.links.count * 2
+        let selfNormalImpulseLength = max(MemoryLayout<Float>.stride, MemoryLayout<Float>.stride * envCount * collisionPairs.count)
+        let selfFrictionImpulseLength = max(MemoryLayout<Float>.stride, MemoryLayout<Float>.stride * envCount * collisionPairs.count * 2)
         let observationLength = MemoryLayout<Float>.stride * envCount * observationSpec.elementsPerEnv
         let scalarLength = MemoryLayout<Float>.stride * envCount
         let uintLength = MemoryLayout<UInt32>.stride * envCount
@@ -193,6 +222,10 @@ final class HumanoidMetalEnvironment {
               let selfContactPointBuffer = device.makeBuffer(length: selfContactVectorLength, options: .storageModeShared),
               let selfContactNormalBuffer = device.makeBuffer(length: selfContactVectorLength, options: .storageModeShared),
               let selfContactPenetrationBuffer = device.makeBuffer(length: selfContactScalarLength, options: .storageModeShared),
+              let groundContactNormalImpulseBuffer = device.makeBuffer(length: groundNormalImpulseLength, options: .storageModeShared),
+              let groundContactFrictionImpulseBuffer = device.makeBuffer(length: groundFrictionImpulseLength, options: .storageModeShared),
+              let selfContactNormalImpulseBuffer = device.makeBuffer(length: selfNormalImpulseLength, options: .storageModeShared),
+              let selfContactFrictionImpulseBuffer = device.makeBuffer(length: selfFrictionImpulseLength, options: .storageModeShared),
               let observationBuffer = device.makeBuffer(length: observationLength, options: .storageModeShared),
               let rewardBuffer = device.makeBuffer(length: scalarLength, options: .storageModeShared),
               let doneBuffer = device.makeBuffer(length: uintLength, options: .storageModeShared),
@@ -226,6 +259,10 @@ final class HumanoidMetalEnvironment {
         self.selfContactPointBuffer = selfContactPointBuffer
         self.selfContactNormalBuffer = selfContactNormalBuffer
         self.selfContactPenetrationBuffer = selfContactPenetrationBuffer
+        self.groundContactNormalImpulseBuffer = groundContactNormalImpulseBuffer
+        self.groundContactFrictionImpulseBuffer = groundContactFrictionImpulseBuffer
+        self.selfContactNormalImpulseBuffer = selfContactNormalImpulseBuffer
+        self.selfContactFrictionImpulseBuffer = selfContactFrictionImpulseBuffer
         self.observationBuffer = observationBuffer
         self.rewardBuffer = rewardBuffer
         self.doneBuffer = doneBuffer
@@ -233,7 +270,9 @@ final class HumanoidMetalEnvironment {
 
         copyArray(linkConstants, to: linkConstantsBuffer)
         copyArray(collisionConstants, to: collisionConstantsBuffer)
-        copyArray(collisionPairs, to: collisionPairConstantsBuffer)
+        if !collisionPairs.isEmpty {
+            copyArray(collisionPairs, to: collisionPairConstantsBuffer)
+        }
         copyArray(jointConstants, to: jointConstantsBuffer)
         writeValue(&params, to: paramsBuffer)
 
@@ -257,9 +296,13 @@ final class HumanoidMetalEnvironment {
         copyArray(Array(repeating: Float.zero, count: envCount * spec.links.count * 3), to: contactPointBuffer)
         copyArray(Array(repeating: Float.zero, count: envCount * spec.links.count * 3), to: contactNormalBuffer)
         copyArray(Array(repeating: Float.zero, count: envCount * spec.links.count), to: contactPenetrationBuffer)
-        copyArray(Array(repeating: Float.zero, count: envCount * collisionPairs.count * 3), to: selfContactPointBuffer)
-        copyArray(Array(repeating: Float.zero, count: envCount * collisionPairs.count * 3), to: selfContactNormalBuffer)
-        copyArray(Array(repeating: Float.zero, count: envCount * collisionPairs.count), to: selfContactPenetrationBuffer)
+        copyArray(Array(repeating: Float.zero, count: max(1, envCount * collisionPairs.count * 3)), to: selfContactPointBuffer)
+        copyArray(Array(repeating: Float.zero, count: max(1, envCount * collisionPairs.count * 3)), to: selfContactNormalBuffer)
+        copyArray(Array(repeating: Float.zero, count: max(1, envCount * collisionPairs.count)), to: selfContactPenetrationBuffer)
+        copyArray(Array(repeating: Float.zero, count: envCount * spec.links.count), to: groundContactNormalImpulseBuffer)
+        copyArray(Array(repeating: Float.zero, count: envCount * spec.links.count * 2), to: groundContactFrictionImpulseBuffer)
+        copyArray(Array(repeating: Float.zero, count: max(1, envCount * collisionPairs.count)), to: selfContactNormalImpulseBuffer)
+        copyArray(Array(repeating: Float.zero, count: max(1, envCount * collisionPairs.count * 2)), to: selfContactFrictionImpulseBuffer)
         copyArray(Array(repeating: UInt32(0), count: envCount), to: resetCountBuffer)
         try runForwardKinematics()
         try refreshOutputs()
@@ -283,6 +326,10 @@ final class HumanoidMetalEnvironment {
             encoder.setBuffer(jointMotorImpulseBuffer, offset: 0, index: 13)
             encoder.setBuffer(jointLimitImpulseBuffer, offset: 0, index: 14)
             encoder.setBuffer(solverDiagnosticsBuffer, offset: 0, index: 15)
+            encoder.setBuffer(groundContactNormalImpulseBuffer, offset: 0, index: 16)
+            encoder.setBuffer(groundContactFrictionImpulseBuffer, offset: 0, index: 17)
+            encoder.setBuffer(selfContactNormalImpulseBuffer, offset: 0, index: 18)
+            encoder.setBuffer(selfContactFrictionImpulseBuffer, offset: 0, index: 19)
         }
         try runForwardKinematics()
         try refreshOutputs()
@@ -386,6 +433,9 @@ final class HumanoidMetalEnvironment {
     }
 
     func detectSelfContacts() throws {
+        if selfCollisionPairCount == 0 {
+            return
+        }
         try runComputePass(commandQueue: commandQueue, pipeline: selfContactPipeline, count: envCount * selfCollisionPairCount) { encoder in
             encoder.setBuffer(collisionConstantsBuffer, offset: 0, index: 0)
             encoder.setBuffer(collisionPairConstantsBuffer, offset: 0, index: 1)
@@ -398,19 +448,81 @@ final class HumanoidMetalEnvironment {
         }
     }
 
-    func solveGroundContacts(baumgarte: Float = 0.2, friction: Float = 0.8) throws -> VectorEnvBatch {
+    func solveGroundContacts(
+        baumgarte: Float = 0.2,
+        friction: Float = 0.8,
+        restitution: Float = 0.0
+    ) throws -> VectorEnvBatch {
         params.contactBaumgarte = baumgarte
         params.contactFriction = friction
+        params.contactRestitution = restitution
         writeValue(&params, to: paramsBuffer)
         try detectGroundContacts()
-        try runComputePass(commandQueue: commandQueue, pipeline: groundContactSolvePipeline, count: envCount * linkCount) { encoder in
+        try runComputePass(commandQueue: commandQueue, pipeline: groundContactPositionPipeline, count: envCount * linkCount) { encoder in
             encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
             encoder.setBuffer(linkPositionBuffer, offset: 0, index: 1)
-            encoder.setBuffer(linkLinearVelocityBuffer, offset: 0, index: 2)
-            encoder.setBuffer(contactNormalBuffer, offset: 0, index: 3)
-            encoder.setBuffer(contactPenetrationBuffer, offset: 0, index: 4)
+            encoder.setBuffer(contactNormalBuffer, offset: 0, index: 2)
+            encoder.setBuffer(contactPenetrationBuffer, offset: 0, index: 3)
+        }
+        try runComputePass(commandQueue: commandQueue, pipeline: groundContactWarmStartPipeline, count: envCount * linkCount) { encoder in
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(groundContactNormalImpulseBuffer, offset: 0, index: 1)
+            encoder.setBuffer(groundContactFrictionImpulseBuffer, offset: 0, index: 2)
+        }
+        try runComputePass(commandQueue: commandQueue, pipeline: groundContactSolvePipeline, count: envCount * linkCount) { encoder in
+            encoder.setBuffer(linkConstantsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 1)
+            encoder.setBuffer(linkPositionBuffer, offset: 0, index: 2)
+            encoder.setBuffer(linkRotationBuffer, offset: 0, index: 3)
+            encoder.setBuffer(linkLinearVelocityBuffer, offset: 0, index: 4)
+            encoder.setBuffer(linkAngularVelocityBuffer, offset: 0, index: 5)
+            encoder.setBuffer(contactPointBuffer, offset: 0, index: 6)
+            encoder.setBuffer(contactNormalBuffer, offset: 0, index: 7)
+            encoder.setBuffer(contactPenetrationBuffer, offset: 0, index: 8)
+            encoder.setBuffer(groundContactNormalImpulseBuffer, offset: 0, index: 9)
+            encoder.setBuffer(groundContactFrictionImpulseBuffer, offset: 0, index: 10)
+            encoder.setBuffer(solverDiagnosticsBuffer, offset: 0, index: 11)
         }
         try detectGroundContacts()
+        try refreshOutputs()
+        return readBatch()
+    }
+
+    func solveSelfContacts() throws -> VectorEnvBatch {
+        if selfCollisionPairCount == 0 {
+            try refreshOutputs()
+            return readBatch()
+        }
+        try detectSelfContacts()
+        try runComputePass(commandQueue: commandQueue, pipeline: selfContactPositionPipeline, count: envCount * selfCollisionPairCount) { encoder in
+            encoder.setBuffer(linkConstantsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(collisionPairConstantsBuffer, offset: 0, index: 1)
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 2)
+            encoder.setBuffer(linkPositionBuffer, offset: 0, index: 3)
+            encoder.setBuffer(selfContactNormalBuffer, offset: 0, index: 4)
+            encoder.setBuffer(selfContactPenetrationBuffer, offset: 0, index: 5)
+        }
+        try runComputePass(commandQueue: commandQueue, pipeline: selfContactWarmStartPipeline, count: envCount * selfCollisionPairCount) { encoder in
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(selfContactNormalImpulseBuffer, offset: 0, index: 1)
+            encoder.setBuffer(selfContactFrictionImpulseBuffer, offset: 0, index: 2)
+        }
+        try runComputePass(commandQueue: commandQueue, pipeline: selfContactSolvePipeline, count: envCount * selfCollisionPairCount) { encoder in
+            encoder.setBuffer(linkConstantsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(collisionPairConstantsBuffer, offset: 0, index: 1)
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 2)
+            encoder.setBuffer(linkPositionBuffer, offset: 0, index: 3)
+            encoder.setBuffer(linkRotationBuffer, offset: 0, index: 4)
+            encoder.setBuffer(linkLinearVelocityBuffer, offset: 0, index: 5)
+            encoder.setBuffer(linkAngularVelocityBuffer, offset: 0, index: 6)
+            encoder.setBuffer(selfContactPointBuffer, offset: 0, index: 7)
+            encoder.setBuffer(selfContactNormalBuffer, offset: 0, index: 8)
+            encoder.setBuffer(selfContactPenetrationBuffer, offset: 0, index: 9)
+            encoder.setBuffer(selfContactNormalImpulseBuffer, offset: 0, index: 10)
+            encoder.setBuffer(selfContactFrictionImpulseBuffer, offset: 0, index: 11)
+            encoder.setBuffer(solverDiagnosticsBuffer, offset: 0, index: 12)
+        }
+        try detectSelfContacts()
         try refreshOutputs()
         return readBatch()
     }
@@ -421,7 +533,10 @@ final class HumanoidMetalEnvironment {
         jointIterations: UInt32 = 8,
         jointBaumgarte: Float = 0.2,
         contactBaumgarte: Float = 0.2,
-        contactFriction: Float = 0.8
+        contactFriction: Float = 0.8,
+        contactRestitution: Float = 0.0,
+        contactIterations: Int = 2,
+        solveSelfContact: Bool = true
     ) throws -> VectorEnvBatch {
         let expectedCount = envCount * dofCount
         if actions.count != expectedCount {
@@ -439,6 +554,7 @@ final class HumanoidMetalEnvironment {
         params.constraintBaumgarte = jointBaumgarte
         params.contactBaumgarte = contactBaumgarte
         params.contactFriction = contactFriction
+        params.contactRestitution = contactRestitution
         writeValue(&params, to: paramsBuffer)
 
         try runComputePass(commandQueue: commandQueue, pipeline: stepPipeline, count: envCount) { encoder in
@@ -471,14 +587,52 @@ final class HumanoidMetalEnvironment {
             encoder.setBuffer(solverDiagnosticsBuffer, offset: 0, index: 9)
         }
         try detectGroundContacts()
-        try runComputePass(commandQueue: commandQueue, pipeline: groundContactSolvePipeline, count: envCount * linkCount) { encoder in
+        try runComputePass(commandQueue: commandQueue, pipeline: groundContactPositionPipeline, count: envCount * linkCount) { encoder in
             encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
             encoder.setBuffer(linkPositionBuffer, offset: 0, index: 1)
-            encoder.setBuffer(linkLinearVelocityBuffer, offset: 0, index: 2)
-            encoder.setBuffer(contactNormalBuffer, offset: 0, index: 3)
-            encoder.setBuffer(contactPenetrationBuffer, offset: 0, index: 4)
+            encoder.setBuffer(contactNormalBuffer, offset: 0, index: 2)
+            encoder.setBuffer(contactPenetrationBuffer, offset: 0, index: 3)
+        }
+        if solveSelfContact && selfCollisionPairCount > 0 {
+            try detectSelfContacts()
+        }
+        try runComputePass(commandQueue: commandQueue, pipeline: groundContactWarmStartPipeline, count: envCount * linkCount) { encoder in
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(groundContactNormalImpulseBuffer, offset: 0, index: 1)
+            encoder.setBuffer(groundContactFrictionImpulseBuffer, offset: 0, index: 2)
+        }
+        if solveSelfContact && selfCollisionPairCount > 0 {
+            try runComputePass(commandQueue: commandQueue, pipeline: selfContactWarmStartPipeline, count: envCount * selfCollisionPairCount) { encoder in
+                encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
+                encoder.setBuffer(selfContactNormalImpulseBuffer, offset: 0, index: 1)
+                encoder.setBuffer(selfContactFrictionImpulseBuffer, offset: 0, index: 2)
+            }
+        }
+        for _ in 0..<max(1, contactIterations) {
+            try runComputePass(commandQueue: commandQueue, pipeline: groundContactSolvePipeline, count: envCount * linkCount) { encoder in
+                encoder.setBuffer(linkConstantsBuffer, offset: 0, index: 0)
+                encoder.setBuffer(paramsBuffer, offset: 0, index: 1)
+                encoder.setBuffer(linkPositionBuffer, offset: 0, index: 2)
+                encoder.setBuffer(linkRotationBuffer, offset: 0, index: 3)
+                encoder.setBuffer(linkLinearVelocityBuffer, offset: 0, index: 4)
+                encoder.setBuffer(linkAngularVelocityBuffer, offset: 0, index: 5)
+                encoder.setBuffer(contactPointBuffer, offset: 0, index: 6)
+                encoder.setBuffer(contactNormalBuffer, offset: 0, index: 7)
+                encoder.setBuffer(contactPenetrationBuffer, offset: 0, index: 8)
+                encoder.setBuffer(groundContactNormalImpulseBuffer, offset: 0, index: 9)
+                encoder.setBuffer(groundContactFrictionImpulseBuffer, offset: 0, index: 10)
+                encoder.setBuffer(solverDiagnosticsBuffer, offset: 0, index: 11)
+            }
+            if solveSelfContact && selfCollisionPairCount > 0 {
+                for pairIndex in 0..<selfCollisionPairCount {
+                    try solveSelectedSelfContact(pairIndex: pairIndex)
+                }
+            }
         }
         try detectGroundContacts()
+        if solveSelfContact && selfCollisionPairCount > 0 {
+            try detectSelfContacts()
+        }
         try syncRootFromPelvis()
         try refreshOutputs()
         return readBatch()
@@ -566,6 +720,10 @@ final class HumanoidMetalEnvironment {
         readArray(from: linkConstantsBuffer, count: linkCount)
     }
 
+    func readCollisionConstants() -> [HumanoidCollisionGPUConstants] {
+        readArray(from: collisionConstantsBuffer, count: linkCount)
+    }
+
     func readJointAnchorErrors() throws -> [Float] {
         try runComputePass(commandQueue: commandQueue, pipeline: anchorErrorPipeline, count: envCount) { encoder in
             encoder.setBuffer(jointConstantsBuffer, offset: 0, index: 0)
@@ -643,14 +801,22 @@ final class HumanoidMetalEnvironment {
         }
         let linkPositions = readLinkPositions()
         let jointPositions = readJointPositions()
+        let contactPoints = readContactPoints()
+        let contactNormals = readContactNormals()
+        let contactPenetrations = readContactPenetrations()
         let rewards = readRewards()
         let dones = readDones()
         let resetCounts = readResetCounts()
         let linkBase = envIndex * linkCount * 3
         let jointBase = envIndex * dofCount
+        let contactBase = envIndex * linkCount
+        let contactVectorBase = contactBase * 3
         return HumanoidReplayFrame(
             linkPositions: Array(linkPositions[linkBase..<(linkBase + linkCount * 3)]),
             jointPositions: Array(jointPositions[jointBase..<(jointBase + dofCount)]),
+            contactPoints: Array(contactPoints[contactVectorBase..<(contactVectorBase + linkCount * 3)]),
+            contactNormals: Array(contactNormals[contactVectorBase..<(contactVectorBase + linkCount * 3)]),
+            contactPenetrations: Array(contactPenetrations[contactBase..<(contactBase + linkCount)]),
             reward: rewards[envIndex],
             done: dones[envIndex],
             resetCount: resetCounts[envIndex]
@@ -679,6 +845,36 @@ final class HumanoidMetalEnvironment {
         }
     }
 
+    private func solveSelectedSelfContact(pairIndex: Int) throws {
+        params.selectedSelfCollisionPair = UInt32(pairIndex)
+        writeValue(&params, to: paramsBuffer)
+        try detectSelfContacts()
+        try runComputePass(commandQueue: commandQueue, pipeline: selectedSelfContactPositionPipeline, count: envCount) { encoder in
+            encoder.setBuffer(linkConstantsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(collisionPairConstantsBuffer, offset: 0, index: 1)
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 2)
+            encoder.setBuffer(linkPositionBuffer, offset: 0, index: 3)
+            encoder.setBuffer(selfContactNormalBuffer, offset: 0, index: 4)
+            encoder.setBuffer(selfContactPenetrationBuffer, offset: 0, index: 5)
+        }
+        try detectSelfContacts()
+        try runComputePass(commandQueue: commandQueue, pipeline: selectedSelfContactSolvePipeline, count: envCount) { encoder in
+            encoder.setBuffer(linkConstantsBuffer, offset: 0, index: 0)
+            encoder.setBuffer(collisionPairConstantsBuffer, offset: 0, index: 1)
+            encoder.setBuffer(paramsBuffer, offset: 0, index: 2)
+            encoder.setBuffer(linkPositionBuffer, offset: 0, index: 3)
+            encoder.setBuffer(linkRotationBuffer, offset: 0, index: 4)
+            encoder.setBuffer(linkLinearVelocityBuffer, offset: 0, index: 5)
+            encoder.setBuffer(linkAngularVelocityBuffer, offset: 0, index: 6)
+            encoder.setBuffer(selfContactPointBuffer, offset: 0, index: 7)
+            encoder.setBuffer(selfContactNormalBuffer, offset: 0, index: 8)
+            encoder.setBuffer(selfContactPenetrationBuffer, offset: 0, index: 9)
+            encoder.setBuffer(selfContactNormalImpulseBuffer, offset: 0, index: 10)
+            encoder.setBuffer(selfContactFrictionImpulseBuffer, offset: 0, index: 11)
+            encoder.setBuffer(solverDiagnosticsBuffer, offset: 0, index: 12)
+        }
+    }
+
     private func refreshOutputs() throws {
         try runComputePass(commandQueue: commandQueue, pipeline: outputPipeline, count: envCount) { encoder in
             encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
@@ -699,5 +895,31 @@ final class HumanoidMetalEnvironment {
         copyArray(Array(repeating: Float.zero, count: envCount * dofCount), to: jointMotorImpulseBuffer)
         copyArray(Array(repeating: Float.zero, count: envCount * dofCount), to: jointLimitImpulseBuffer)
         copyArray(Array(repeating: Float.zero, count: envCount * 4), to: solverDiagnosticsBuffer)
+        copyArray(Array(repeating: Float.zero, count: envCount * linkCount), to: groundContactNormalImpulseBuffer)
+        copyArray(Array(repeating: Float.zero, count: envCount * linkCount * 2), to: groundContactFrictionImpulseBuffer)
+        copyArray(Array(repeating: Float.zero, count: max(1, envCount * selfCollisionPairCount)), to: selfContactNormalImpulseBuffer)
+        copyArray(Array(repeating: Float.zero, count: max(1, envCount * selfCollisionPairCount * 2)), to: selfContactFrictionImpulseBuffer)
+    }
+
+    func readGroundContactNormalImpulses() -> [Float] {
+        readArray(from: groundContactNormalImpulseBuffer, count: envCount * linkCount)
+    }
+
+    func readGroundContactFrictionImpulses() -> [Float] {
+        readArray(from: groundContactFrictionImpulseBuffer, count: envCount * linkCount * 2)
+    }
+
+    func readSelfContactNormalImpulses() -> [Float] {
+        if selfCollisionPairCount == 0 {
+            return []
+        }
+        return readArray(from: selfContactNormalImpulseBuffer, count: envCount * selfCollisionPairCount)
+    }
+
+    func readSelfContactFrictionImpulses() -> [Float] {
+        if selfCollisionPairCount == 0 {
+            return []
+        }
+        return readArray(from: selfContactFrictionImpulseBuffer, count: envCount * selfCollisionPairCount * 2)
     }
 }

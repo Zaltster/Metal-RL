@@ -21,6 +21,7 @@ swiftc \
   "$ROOT_DIR/src/envs/humanoid/HumanoidTypes.swift" \
   "$ROOT_DIR/src/envs/humanoid/HumanoidRobotLoader.swift" \
   "$ROOT_DIR/src/envs/humanoid/HumanoidMetalEnvironment.swift" \
+  "$ROOT_DIR/src/envs/humanoid/HumanoidStandingVectorEnvDriver.swift" \
   "$ROOT_DIR/src/envs/humanoid/HumanoidHTMLReplay.swift" \
   "$ROOT_DIR/src/rl/random/RandomPolicyRollout.swift" \
   "$ROOT_DIR/src/rl/policy/LinearPolicy.swift" \

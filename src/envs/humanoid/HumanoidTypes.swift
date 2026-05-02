@@ -294,12 +294,16 @@ struct HumanoidEnvParams {
     var constraintBaumgarte: Float
     var contactBaumgarte: Float
     var contactFriction: Float
-    var reserved: UInt32
+    var contactRestitution: Float
+    var selectedSelfCollisionPair: UInt32
 }
 
 struct HumanoidReplayFrame {
     let linkPositions: [Float]
     let jointPositions: [Float]
+    let contactPoints: [Float]
+    let contactNormals: [Float]
+    let contactPenetrations: [Float]
     let reward: Float
     let done: UInt32
     let resetCount: UInt32

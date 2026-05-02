@@ -54,7 +54,7 @@ What is implemented:
 - JSON checkpoint/restart validation for persistent GPU trainable parameters plus Adam optimizer state
 - host-side rollout storage with explicit indexing helpers
 - locked humanoid v1 robot spec and synthetic baseline JSON
-- GPU-first humanoid elastic-joint environment with JSON loading, rigid-body state buffers, Metal reset/step/FK/output kernels, and HTML replay export
+- GPU-first humanoid rigid-body/contact validation path with JSON schema-version rejection, rigid-body state buffers, Metal reset/step/FK/output kernels, effective-mass joint rows, ground/self contact smoke checks, HTML replay export, and replay JSON/video tooling
 
 What is not implemented yet:
 
@@ -63,6 +63,7 @@ What is not implemented yet:
 - production resume flow using persistent GPU optimizer-state checkpoints
 - fully device-resident checkpointing without host serialization
 - fully GPU-native end-to-end training
+- production-grade humanoid physics: real GJK/EPA convex collision, triangle-mesh terrain, manifold persistence, friction-cone projection, island sleeping, colored self-contact dispatch, NaN trap diagnostics, per-kernel profiler output, observation normalization, and a trained standing PPO checkpoint remain future work
 
 ## Project Structure
 
@@ -129,7 +130,7 @@ The current harness checks:
 - deterministic hybrid GPU-rollout training-loop replay
 - trainable actor-critic checkpoint round-trip and restored GPU policy parity
 - seeded stochastic Gaussian actor-critic rollout replay and CPU/GPU parity
-- humanoid GPU rigid-body state, elastic-joint step, forward kinematics, and replay export
+- humanoid GPU rigid-body state, effective-mass joint rows, motors/limits, ground/self contact checks, standing-step smoke rollout, schema-version rejection, forward kinematics, replay JSON/HTML export, and video-render script failure checks
 - rollout storage replay
 
 ## Run
@@ -153,6 +154,7 @@ Expected output includes lines like:
 - `persistent gpu adam training loop matched cpu adam training loop`
 - `persistent gpu trainable buffers synced directly into rollout policy buffers`
 - `stochastic gaussian actor-critic rollout replay and cpu/gpu parity matched`
+- `humanoid schema_version mismatch rejected with expected-version context`
 - `humanoid gpu rigid-body state, free-body integration, joint anchor constraints, motors/limits, ground/self contacts, contact solver, standing env, FK, and replay passed`
 - `rollout storage replay matched exactly`
 
@@ -219,6 +221,13 @@ It loads `docs/humanoid_v1_baseline.json`, runs the batched Metal humanoid envir
 
 ```text
 humanoid-demo/.build/humanoid_replay.html
+humanoid-demo/.build/humanoid_replay.json
+```
+
+Render the replay JSON to MP4 with a headless browser and `ffmpeg`:
+
+```bash
+./scripts/render_humanoid_video.sh humanoid-demo/.build/humanoid_replay.json /tmp/humanoid.mp4
 ```
 
 Useful controls:

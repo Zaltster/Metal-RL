@@ -113,7 +113,8 @@ struct HumanoidEnvParams {
     float constraintBaumgarte;
     float contactBaumgarte;
     float contactFriction;
-    uint reserved;
+    float contactRestitution;
+    uint selectedSelfCollisionPair;
 };
 
 float4 quat_mul(float4 a, float4 b) {
@@ -239,6 +240,10 @@ kernel void humanoid_reset(
     device float *jointMotorImpulses [[buffer(13)]],
     device float *jointLimitImpulses [[buffer(14)]],
     device float *solverDiagnostics [[buffer(15)]],
+    device float *groundNormalImpulses [[buffer(16)]],
+    device float *groundFrictionImpulses [[buffer(17)]],
+    device float *selfNormalImpulses [[buffer(18)]],
+    device float *selfFrictionImpulses [[buffer(19)]],
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= params.envCount) {
@@ -272,6 +277,17 @@ kernel void humanoid_reset(
         linkAngularVelocities[base + 0u] = 0.0f * link.invInertiaIxx;
         linkAngularVelocities[base + 1u] = 0.0f;
         linkAngularVelocities[base + 2u] = 0.0f;
+
+        const uint groundBase = gid * params.linkCount + linkIndex;
+        groundNormalImpulses[groundBase] = 0.0f;
+        groundFrictionImpulses[groundBase * 2u + 0u] = 0.0f;
+        groundFrictionImpulses[groundBase * 2u + 1u] = 0.0f;
+    }
+    for (uint pairIndex = 0u; pairIndex < params.selfCollisionPairCount; ++pairIndex) {
+        const uint pairBase = gid * params.selfCollisionPairCount + pairIndex;
+        selfNormalImpulses[pairBase] = 0.0f;
+        selfFrictionImpulses[pairBase * 2u + 0u] = 0.0f;
+        selfFrictionImpulses[pairBase * 2u + 1u] = 0.0f;
     }
 
     for (uint jointIndex = 0u; jointIndex < params.jointCount; ++jointIndex) {
@@ -858,6 +874,99 @@ kernel void humanoid_solve_joint_anchor_constraints(
                 childAngularVelocity += inverse_inertia_mul_world(links[child], childRotation, angularAxis) * velocityLambda;
             }
 
+            if (joint.type == 4u) {
+                const float4 parentJointFrameNow = normalize(quat_mul(parentRotation, parentFrame));
+                const float4 childJointFrame = normalize(quat_mul(childRotation, childFrame));
+                const float4 qRel = normalize(quat_mul(quat_conjugate(parentJointFrameNow), childJointFrame));
+                const float twistDot = qRel.x;
+                const float twistW = qRel.w;
+                const float twistMagnitude = sqrt(max(twistDot * twistDot + twistW * twistW, 1.0e-12f));
+                float4 qTwist = float4(twistDot, 0.0f, 0.0f, twistW) / twistMagnitude;
+                float4 qSwing = normalize(quat_mul(qRel, quat_conjugate(qTwist)));
+                if (qSwing.w < 0.0f) {
+                    qSwing = -qSwing;
+                }
+                if (qTwist.w < 0.0f) {
+                    qTwist = -qTwist;
+                }
+
+                const float swingY = qSwing.y;
+                const float swingZ = qSwing.z;
+                const float swingNorm = sqrt(max(swingY * swingY + swingZ * swingZ, 1.0e-12f));
+                const float swingW = clamp(qSwing.w, -1.0f, 1.0f);
+                const float swingHalfAngle = atan2(swingNorm, swingW);
+                const float swingAngle = 2.0f * swingHalfAngle;
+                const float maxSwingAngle = sqrt(
+                    max(joint.limitMaxX * joint.limitMaxX + joint.limitMaxY * joint.limitMaxY, 1.0e-6f)
+                );
+                const float coneError = max(0.0f, swingAngle - maxSwingAngle);
+                if (coneError > 0.0f) {
+                    const float swingDirY = swingY / swingNorm;
+                    const float swingDirZ = swingZ / swingNorm;
+                    const float3 swingAxisLocal = float3(0.0f, swingDirY, swingDirZ);
+                    const float3 swingAxisWorld = normalize(quat_rotate(parentJointFrameNow, swingAxisLocal));
+                    const float parentInvAngularMass = inverse_inertia_quadratic_world(links[parent], parentRotation, swingAxisWorld);
+                    const float childInvAngularMass = inverse_inertia_quadratic_world(links[child], childRotation, swingAxisWorld);
+                    const float rowInvMass = parentInvAngularMass + childInvAngularMass;
+                    if (rowInvMass > 1.0e-7f) {
+                        const float positionLambda = coneError / rowInvMass;
+                        const float3 parentAngularDelta = -inverse_inertia_mul_world(links[parent], parentRotation, swingAxisWorld) * positionLambda;
+                        const float3 childAngularDelta = inverse_inertia_mul_world(links[child], childRotation, swingAxisWorld) * positionLambda;
+                        parentRotation = normalize(quat_mul(quat_from_rotation_vector(parentAngularDelta), parentRotation));
+                        childRotation = normalize(quat_mul(quat_from_rotation_vector(childAngularDelta), childRotation));
+
+                        const float relativeAngularVelocity = dot(childAngularVelocity - parentAngularVelocity, swingAxisWorld);
+                        const float velocityLambda = max(0.0f, coneError * velocityScale - relativeAngularVelocity) / rowInvMass;
+                        parentAngularVelocity -= inverse_inertia_mul_world(links[parent], parentRotation, swingAxisWorld) * velocityLambda;
+                        childAngularVelocity += inverse_inertia_mul_world(links[child], childRotation, swingAxisWorld) * velocityLambda;
+                        maxConstraintError = max(maxConstraintError, coneError);
+                        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(velocityLambda));
+                        angularRowCount = max(angularRowCount, 1u);
+                    } else {
+                        rowFailureCount += 1.0f;
+                    }
+                }
+
+                const float twistSign = (qTwist.x >= 0.0f) ? 1.0f : -1.0f;
+                const float twistMag = clamp(abs(qTwist.x), 0.0f, 1.0f);
+                const float twistAngle = twistSign * 2.0f * asin(twistMag);
+                const float twistMin = joint.limitMinZ;
+                const float twistMax = joint.limitMaxZ;
+                float twistError = 0.0f;
+                float twistRowSign = 0.0f;
+                if (twistAngle < twistMin) {
+                    twistError = twistMin - twistAngle;
+                    twistRowSign = 1.0f;
+                } else if (twistAngle > twistMax) {
+                    twistError = twistAngle - twistMax;
+                    twistRowSign = -1.0f;
+                }
+                if (twistError > 0.0f) {
+                    const float3 twistAxisWorld = normalize(quat_rotate(parentJointFrameNow, float3(1.0f, 0.0f, 0.0f)));
+                    const float parentInvAngularMass = inverse_inertia_quadratic_world(links[parent], parentRotation, twistAxisWorld);
+                    const float childInvAngularMass = inverse_inertia_quadratic_world(links[child], childRotation, twistAxisWorld);
+                    const float rowInvMass = parentInvAngularMass + childInvAngularMass;
+                    if (rowInvMass > 1.0e-7f) {
+                        const float positionLambda = (twistRowSign * twistError) / rowInvMass;
+                        const float3 parentAngularDelta = -inverse_inertia_mul_world(links[parent], parentRotation, twistAxisWorld) * positionLambda;
+                        const float3 childAngularDelta = inverse_inertia_mul_world(links[child], childRotation, twistAxisWorld) * positionLambda;
+                        parentRotation = normalize(quat_mul(quat_from_rotation_vector(parentAngularDelta), parentRotation));
+                        childRotation = normalize(quat_mul(quat_from_rotation_vector(childAngularDelta), childRotation));
+
+                        const float relativeAngularVelocity = dot(childAngularVelocity - parentAngularVelocity, twistAxisWorld);
+                        const float velocityLambda = (twistRowSign * twistError * velocityScale - twistRowSign * relativeAngularVelocity) / rowInvMass;
+                        const float clampedLambda = (twistRowSign >= 0.0f) ? max(0.0f, velocityLambda) : min(0.0f, velocityLambda);
+                        parentAngularVelocity -= inverse_inertia_mul_world(links[parent], parentRotation, twistAxisWorld) * clampedLambda;
+                        childAngularVelocity += inverse_inertia_mul_world(links[child], childRotation, twistAxisWorld) * clampedLambda;
+                        maxConstraintError = max(maxConstraintError, twistError);
+                        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(clampedLambda));
+                        angularRowCount = max(angularRowCount, 1u);
+                    } else {
+                        rowFailureCount += 1.0f;
+                    }
+                }
+            }
+
             if (angularRowCount > 0u) {
                 store_quat(linkRotations, parentBase4, parentRotation);
                 store_quat(linkRotations, childBase4, childRotation);
@@ -962,7 +1071,7 @@ kernel void humanoid_detect_ground_contacts(
 
     float supportDepth = 0.0f;
     float2 contactXY = center.xy;
-    if (shape.type == 1u) {
+    if (shape.type == 1u || shape.type == 5u) {
         const float3 axisX = quat_rotate(worldRotation, float3(1.0f, 0.0f, 0.0f));
         const float3 axisY = quat_rotate(worldRotation, float3(0.0f, 1.0f, 0.0f));
         const float3 axisZ = quat_rotate(worldRotation, float3(0.0f, 0.0f, 1.0f));
@@ -1000,6 +1109,19 @@ float4 collision_rotation(
 ) {
     const float4 localRotation = normalize(float4(shape.rotationX, shape.rotationY, shape.rotationZ, shape.rotationW));
     return normalize(quat_mul(linkRotation, localRotation));
+}
+
+float collision_bounding_radius(const HumanoidCollisionGPUConstants shape) {
+    if (shape.type == 1u || shape.type == 5u) {
+        return length(float3(shape.paramX, shape.paramY, shape.paramZ));
+    }
+    if (shape.type == 2u) {
+        return shape.paramX;
+    }
+    if (shape.type == 3u || shape.type == 4u) {
+        return shape.paramX + shape.paramY;
+    }
+    return 0.0f;
 }
 
 void capsule_segment(
@@ -1075,6 +1197,98 @@ float3 contact_normal_from_delta(float3 delta) {
     return float3(1.0f, 0.0f, 0.0f);
 }
 
+float obb_axis_projection(float3 axis, float3 a0, float3 a1, float3 a2, float3 extents) {
+    return extents.x * abs(dot(axis, a0))
+        + extents.y * abs(dot(axis, a1))
+        + extents.z * abs(dot(axis, a2));
+}
+
+bool obb_test_axis(
+    float3 axis,
+    float3 delta,
+    float3 a0,
+    float3 a1,
+    float3 a2,
+    float3 extentsA,
+    float3 b0,
+    float3 b1,
+    float3 b2,
+    float3 extentsB,
+    thread float &bestPenetration,
+    thread float3 &bestNormal
+) {
+    const float axisLength = length(axis);
+    if (axisLength <= 1.0e-6f) {
+        return true;
+    }
+    const float3 unitAxis = axis / axisLength;
+    const float projectionA = obb_axis_projection(unitAxis, a0, a1, a2, extentsA);
+    const float projectionB = obb_axis_projection(unitAxis, b0, b1, b2, extentsB);
+    const float signedDistance = dot(delta, unitAxis);
+    const float penetration = projectionA + projectionB - abs(signedDistance);
+    if (penetration <= 0.0f) {
+        return false;
+    }
+    if (penetration < bestPenetration) {
+        bestPenetration = penetration;
+        bestNormal = (signedDistance >= 0.0f) ? unitAxis : -unitAxis;
+    }
+    return true;
+}
+
+bool box_box_contact(
+    const HumanoidCollisionGPUConstants shapeA,
+    const HumanoidCollisionGPUConstants shapeB,
+    float3 linkPositionA,
+    float3 linkPositionB,
+    float4 linkRotationA,
+    float4 linkRotationB,
+    thread float3 &normal,
+    thread float3 &contactPoint,
+    thread float &penetration
+) {
+    const float3 centerA = collision_center(shapeA, linkPositionA, linkRotationA);
+    const float3 centerB = collision_center(shapeB, linkPositionB, linkRotationB);
+    const float4 rotationA = collision_rotation(shapeA, linkRotationA);
+    const float4 rotationB = collision_rotation(shapeB, linkRotationB);
+    const float3 a0 = normalize(quat_rotate(rotationA, float3(1.0f, 0.0f, 0.0f)));
+    const float3 a1 = normalize(quat_rotate(rotationA, float3(0.0f, 1.0f, 0.0f)));
+    const float3 a2 = normalize(quat_rotate(rotationA, float3(0.0f, 0.0f, 1.0f)));
+    const float3 b0 = normalize(quat_rotate(rotationB, float3(1.0f, 0.0f, 0.0f)));
+    const float3 b1 = normalize(quat_rotate(rotationB, float3(0.0f, 1.0f, 0.0f)));
+    const float3 b2 = normalize(quat_rotate(rotationB, float3(0.0f, 0.0f, 1.0f)));
+    const float3 extentsA = float3(shapeA.paramX, shapeA.paramY, shapeA.paramZ);
+    const float3 extentsB = float3(shapeB.paramX, shapeB.paramY, shapeB.paramZ);
+    const float3 delta = centerB - centerA;
+
+    float bestPenetration = INFINITY;
+    float3 bestNormal = contact_normal_from_delta(delta);
+    if (!obb_test_axis(a0, delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(a1, delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(a2, delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(b0, delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(b1, delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(b2, delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a0, b0), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a0, b1), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a0, b2), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a1, b0), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a1, b1), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a1, b2), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a2, b0), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a2, b1), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+    if (!obb_test_axis(cross(a2, b2), delta, a0, a1, a2, extentsA, b0, b1, b2, extentsB, bestPenetration, bestNormal)) { return false; }
+
+    penetration = bestPenetration;
+    normal = bestNormal;
+    const float projectionA = obb_axis_projection(bestNormal, a0, a1, a2, extentsA);
+    const float projectionB = obb_axis_projection(bestNormal, b0, b1, b2, extentsB);
+    const float3 surfaceA = centerA + bestNormal * projectionA;
+    const float3 surfaceB = centerB - bestNormal * projectionB;
+    contactPoint = 0.5f * (surfaceA + surfaceB);
+    return true;
+}
+
 kernel void humanoid_detect_self_contacts(
     device const HumanoidCollisionGPUConstants *collisions [[buffer(0)]],
     device const HumanoidCollisionPairGPUConstants *pairs [[buffer(1)]],
@@ -1116,12 +1330,33 @@ kernel void humanoid_detect_self_contacts(
     const float3 linkPositionB = load_float3(linkPositions, linkBBase3);
     const float4 linkRotationA = load_quat(linkRotations, linkABase4);
     const float4 linkRotationB = load_quat(linkRotations, linkBBase4);
+    const float3 broadCenterA = collision_center(shapeA, linkPositionA, linkRotationA);
+    const float3 broadCenterB = collision_center(shapeB, linkPositionB, linkRotationB);
+    const float broadRadiusSum = collision_bounding_radius(shapeA) + collision_bounding_radius(shapeB);
+    if (broadRadiusSum <= 0.0f || length(broadCenterB - broadCenterA) > broadRadiusSum) {
+        return;
+    }
 
     float3 pointA = float3(0.0f);
     float3 pointB = float3(0.0f);
     float radiusSum = 0.0f;
     bool supported = false;
-    if (shapeA.type == 2u && shapeB.type == 2u) {
+    if ((shapeA.type == 1u || shapeA.type == 5u) && (shapeB.type == 1u || shapeB.type == 5u)) {
+        float3 normal;
+        float3 contactPoint;
+        float penetration;
+        if (!box_box_contact(shapeA, shapeB, linkPositionA, linkPositionB, linkRotationA, linkRotationB, normal, contactPoint, penetration)) {
+            return;
+        }
+        contactPoints[contactBase3 + 0u] = contactPoint.x;
+        contactPoints[contactBase3 + 1u] = contactPoint.y;
+        contactPoints[contactBase3 + 2u] = contactPoint.z;
+        contactNormals[contactBase3 + 0u] = normal.x;
+        contactNormals[contactBase3 + 1u] = normal.y;
+        contactNormals[contactBase3 + 2u] = normal.z;
+        contactPenetrations[gid] = penetration;
+        return;
+    } else if (shapeA.type == 2u && shapeB.type == 2u) {
         pointA = collision_center(shapeA, linkPositionA, linkRotationA);
         pointB = collision_center(shapeB, linkPositionB, linkRotationB);
         radiusSum = shapeA.paramX + shapeB.paramX;
@@ -1160,12 +1395,169 @@ kernel void humanoid_detect_self_contacts(
     contactPenetrations[gid] = penetration;
 }
 
-kernel void humanoid_solve_ground_contacts(
+float contact_row_inverse_mass(
+    const HumanoidLinkGPUConstants link,
+    float4 rotation,
+    float3 contactOffset,
+    float3 axis
+) {
+    const float3 angularAxis = cross(contactOffset, axis);
+    return link.invMass + inverse_inertia_quadratic_world(link, rotation, angularAxis);
+}
+
+kernel void humanoid_correct_ground_contact_positions(
     constant HumanoidEnvParams &params [[buffer(0)]],
     device float *linkPositions [[buffer(1)]],
-    device float *linkLinearVelocities [[buffer(2)]],
-    device const float *contactNormals [[buffer(3)]],
-    device const float *contactPenetrations [[buffer(4)]],
+    device const float *contactNormals [[buffer(2)]],
+    device const float *contactPenetrations [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    const uint total = params.envCount * params.linkCount;
+    if (gid >= total) {
+        return;
+    }
+    const float penetration = contactPenetrations[gid];
+    if (penetration <= 0.0f) {
+        return;
+    }
+    const uint base3 = gid * 3u;
+    const float3 normal = normalize(load_float3(contactNormals, base3));
+    float3 position = load_float3(linkPositions, base3);
+    position += normal * penetration;
+    store_float3(linkPositions, base3, position);
+}
+
+kernel void humanoid_warm_start_ground_contacts(
+    constant HumanoidEnvParams &params [[buffer(0)]],
+    device float *groundNormalImpulses [[buffer(1)]],
+    device float *groundFrictionImpulses [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    const uint total = params.envCount * params.linkCount;
+    if (gid >= total) {
+        return;
+    }
+    const uint frictionBase = gid * 2u;
+    groundNormalImpulses[gid] = 0.0f;
+    groundFrictionImpulses[frictionBase + 0u] = 0.0f;
+    groundFrictionImpulses[frictionBase + 1u] = 0.0f;
+}
+
+kernel void humanoid_warm_start_self_contacts(
+    constant HumanoidEnvParams &params [[buffer(0)]],
+    device float *selfNormalImpulses [[buffer(1)]],
+    device float *selfFrictionImpulses [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (params.selfCollisionPairCount == 0u) {
+        return;
+    }
+    const uint total = params.envCount * params.selfCollisionPairCount;
+    if (gid >= total) {
+        return;
+    }
+    const uint frictionBase = gid * 2u;
+    selfNormalImpulses[gid] = 0.0f;
+    selfFrictionImpulses[frictionBase + 0u] = 0.0f;
+    selfFrictionImpulses[frictionBase + 1u] = 0.0f;
+}
+
+kernel void humanoid_correct_self_contact_positions(
+    device const HumanoidLinkGPUConstants *links [[buffer(0)]],
+    device const HumanoidCollisionPairGPUConstants *pairs [[buffer(1)]],
+    constant HumanoidEnvParams &params [[buffer(2)]],
+    device float *linkPositions [[buffer(3)]],
+    device const float *contactNormals [[buffer(4)]],
+    device const float *contactPenetrations [[buffer(5)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (params.selfCollisionPairCount == 0u) {
+        return;
+    }
+    const uint total = params.envCount * params.selfCollisionPairCount;
+    if (gid >= total) {
+        return;
+    }
+    const float penetration = contactPenetrations[gid];
+    if (penetration <= 0.0f) {
+        return;
+    }
+    const uint env = gid / params.selfCollisionPairCount;
+    const uint pairIndex = gid - env * params.selfCollisionPairCount;
+    const HumanoidCollisionPairGPUConstants pair = pairs[pairIndex];
+    const HumanoidLinkGPUConstants matA = links[pair.linkA];
+    const HumanoidLinkGPUConstants matB = links[pair.linkB];
+    const uint baseA3 = (env * params.linkCount + pair.linkA) * 3u;
+    const uint baseB3 = (env * params.linkCount + pair.linkB) * 3u;
+    const uint pointBase3 = gid * 3u;
+    const float3 normalAB = normalize(load_float3(contactNormals, pointBase3));
+    const float invMassSum = matA.invMass + matB.invMass;
+    if (invMassSum <= 1.0e-7f) {
+        return;
+    }
+    const float share = matA.invMass / invMassSum;
+    float3 positionA = load_float3(linkPositions, baseA3);
+    float3 positionB = load_float3(linkPositions, baseB3);
+    positionA -= normalAB * (penetration * share);
+    positionB += normalAB * (penetration * (1.0f - share));
+    store_float3(linkPositions, baseA3, positionA);
+    store_float3(linkPositions, baseB3, positionB);
+}
+
+kernel void humanoid_correct_selected_self_contact_positions(
+    device const HumanoidLinkGPUConstants *links [[buffer(0)]],
+    device const HumanoidCollisionPairGPUConstants *pairs [[buffer(1)]],
+    constant HumanoidEnvParams &params [[buffer(2)]],
+    device float *linkPositions [[buffer(3)]],
+    device const float *contactNormals [[buffer(4)]],
+    device const float *contactPenetrations [[buffer(5)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (params.selfCollisionPairCount == 0u || params.selectedSelfCollisionPair >= params.selfCollisionPairCount) {
+        return;
+    }
+    if (gid >= params.envCount) {
+        return;
+    }
+    const uint pairIndex = params.selectedSelfCollisionPair;
+    const uint contactIndex = gid * params.selfCollisionPairCount + pairIndex;
+    const float penetration = contactPenetrations[contactIndex];
+    if (penetration <= 0.0f) {
+        return;
+    }
+    const HumanoidCollisionPairGPUConstants pair = pairs[pairIndex];
+    const HumanoidLinkGPUConstants matA = links[pair.linkA];
+    const HumanoidLinkGPUConstants matB = links[pair.linkB];
+    const uint baseA3 = (gid * params.linkCount + pair.linkA) * 3u;
+    const uint baseB3 = (gid * params.linkCount + pair.linkB) * 3u;
+    const uint pointBase3 = contactIndex * 3u;
+    const float3 normalAB = normalize(load_float3(contactNormals, pointBase3));
+    const float invMassSum = matA.invMass + matB.invMass;
+    if (invMassSum <= 1.0e-7f) {
+        return;
+    }
+    const float share = matA.invMass / invMassSum;
+    float3 positionA = load_float3(linkPositions, baseA3);
+    float3 positionB = load_float3(linkPositions, baseB3);
+    positionA -= normalAB * (penetration * share);
+    positionB += normalAB * (penetration * (1.0f - share));
+    store_float3(linkPositions, baseA3, positionA);
+    store_float3(linkPositions, baseB3, positionB);
+}
+
+kernel void humanoid_solve_ground_contacts(
+    device const HumanoidLinkGPUConstants *links [[buffer(0)]],
+    constant HumanoidEnvParams &params [[buffer(1)]],
+    device float *linkPositions [[buffer(2)]],
+    device float *linkRotations [[buffer(3)]],
+    device float *linkLinearVelocities [[buffer(4)]],
+    device float *linkAngularVelocities [[buffer(5)]],
+    device const float *contactPoints [[buffer(6)]],
+    device const float *contactNormals [[buffer(7)]],
+    device const float *contactPenetrations [[buffer(8)]],
+    device float *groundNormalImpulses [[buffer(9)]],
+    device float *groundFrictionImpulses [[buffer(10)]],
+    device float *solverDiagnostics [[buffer(11)]],
     uint gid [[thread_position_in_grid]]
 ) {
     const uint total = params.envCount * params.linkCount;
@@ -1173,36 +1565,438 @@ kernel void humanoid_solve_ground_contacts(
         return;
     }
 
+    const uint env = gid / params.linkCount;
+    const uint linkIdx = gid - env * params.linkCount;
     const float penetration = contactPenetrations[gid];
     const uint base3 = gid * 3u;
+    const uint frictionBase = gid * 2u;
+    const uint diagnosticsBase = env * 4u;
+
     if (penetration <= 0.0f) {
+        groundNormalImpulses[gid] = 0.0f;
+        groundFrictionImpulses[frictionBase + 0u] = 0.0f;
+        groundFrictionImpulses[frictionBase + 1u] = 0.0f;
         return;
     }
 
+    const HumanoidLinkGPUConstants link = links[linkIdx];
     const float3 normal = normalize(load_float3(contactNormals, base3));
-    float3 position = load_float3(linkPositions, base3);
-    float3 velocity = load_float3(linkLinearVelocities, base3);
+    float3 linearVelocity = load_float3(linkLinearVelocities, base3);
 
-    position += normal * penetration;
+    const float normalVelocity = dot(linearVelocity, normal);
+    const float restitutionTarget = (normalVelocity < -1.0e-2f) ? (-params.contactRestitution * normalVelocity) : 0.0f;
 
-    const float normalVelocity = dot(velocity, normal);
-    const float normalImpulse = max(max(-normalVelocity, 0.0f), penetration * params.contactBaumgarte / max(params.dt, 1.0e-6f));
-    if (normalVelocity < 0.0f) {
-        velocity -= normal * normalVelocity;
+    float3 tangent1;
+    {
+        const float3 candidate = (abs(normal.z) < 0.95f) ? cross(normal, float3(0.0f, 0.0f, 1.0f)) : cross(normal, float3(1.0f, 0.0f, 0.0f));
+        const float candidateLength = length(candidate);
+        tangent1 = (candidateLength > 1.0e-7f) ? candidate / candidateLength : float3(1.0f, 0.0f, 0.0f);
+    }
+    const float3 tangent2 = normalize(cross(normal, tangent1));
+
+    const float normalTargetVelocity = restitutionTarget;
+
+    float maxConstraintError = solverDiagnostics[diagnosticsBase + 0u];
+    float maxImpulseMagnitude = solverDiagnostics[diagnosticsBase + 1u];
+    float nonFiniteCount = solverDiagnostics[diagnosticsBase + 2u];
+    float rowFailureCount = solverDiagnostics[diagnosticsBase + 3u];
+
+    if (link.invMass <= 1.0e-7f) {
+        rowFailureCount += 1.0f;
+    } else {
+        const float currentNormalVelocity = dot(linearVelocity, normal);
+        float normalLambda = (normalTargetVelocity - currentNormalVelocity) / link.invMass;
+        const float oldNormal = groundNormalImpulses[gid];
+        const float newNormal = max(0.0f, oldNormal + normalLambda);
+        normalLambda = newNormal - oldNormal;
+        groundNormalImpulses[gid] = newNormal;
+        linearVelocity += normal * (normalLambda * link.invMass);
+        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newNormal));
+        maxConstraintError = max(maxConstraintError, penetration);
     }
 
-    const float3 normalComponent = normal * dot(velocity, normal);
-    float3 tangentVelocity = velocity - normalComponent;
-    const float tangentSpeed = length(tangentVelocity);
-    if (tangentSpeed > 1.0e-7f) {
-        const float frictionDelta = params.contactFriction * normalImpulse;
-        const float remainingSpeed = max(0.0f, tangentSpeed - frictionDelta);
-        tangentVelocity *= remainingSpeed / tangentSpeed;
+    const float frictionLimit = params.contactFriction * groundNormalImpulses[gid];
+    if (link.invMass > 1.0e-7f) {
+        {
+            const float t1Velocity = dot(linearVelocity, tangent1);
+            float t1Lambda = -t1Velocity / link.invMass;
+            const float oldT1 = groundFrictionImpulses[frictionBase + 0u];
+            const float newT1 = clamp(oldT1 + t1Lambda, -frictionLimit, frictionLimit);
+            t1Lambda = newT1 - oldT1;
+            groundFrictionImpulses[frictionBase + 0u] = newT1;
+            linearVelocity += tangent1 * (t1Lambda * link.invMass);
+            maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newT1));
+        }
+        {
+            const float t2Velocity = dot(linearVelocity, tangent2);
+            float t2Lambda = -t2Velocity / link.invMass;
+            const float oldT2 = groundFrictionImpulses[frictionBase + 1u];
+            const float newT2 = clamp(oldT2 + t2Lambda, -frictionLimit, frictionLimit);
+            t2Lambda = newT2 - oldT2;
+            groundFrictionImpulses[frictionBase + 1u] = newT2;
+            linearVelocity += tangent2 * (t2Lambda * link.invMass);
+            maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newT2));
+        }
     }
-    velocity = normalComponent + tangentVelocity;
 
-    store_float3(linkPositions, base3, position);
-    store_float3(linkLinearVelocities, base3, velocity);
+    if (!all(isfinite(linearVelocity))) {
+        nonFiniteCount += 1.0f;
+    }
+
+    solverDiagnostics[diagnosticsBase + 0u] = maxConstraintError;
+    solverDiagnostics[diagnosticsBase + 1u] = maxImpulseMagnitude;
+    solverDiagnostics[diagnosticsBase + 2u] = nonFiniteCount;
+    solverDiagnostics[diagnosticsBase + 3u] = rowFailureCount;
+
+    store_float3(linkLinearVelocities, base3, linearVelocity);
+}
+
+kernel void humanoid_solve_self_contacts(
+    device const HumanoidLinkGPUConstants *links [[buffer(0)]],
+    device const HumanoidCollisionPairGPUConstants *pairs [[buffer(1)]],
+    constant HumanoidEnvParams &params [[buffer(2)]],
+    device float *linkPositions [[buffer(3)]],
+    device float *linkRotations [[buffer(4)]],
+    device float *linkLinearVelocities [[buffer(5)]],
+    device float *linkAngularVelocities [[buffer(6)]],
+    device const float *contactPoints [[buffer(7)]],
+    device const float *contactNormals [[buffer(8)]],
+    device const float *contactPenetrations [[buffer(9)]],
+    device float *selfNormalImpulses [[buffer(10)]],
+    device float *selfFrictionImpulses [[buffer(11)]],
+    device float *solverDiagnostics [[buffer(12)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (params.selfCollisionPairCount == 0u) {
+        return;
+    }
+    const uint total = params.envCount * params.selfCollisionPairCount;
+    if (gid >= total) {
+        return;
+    }
+
+    const uint env = gid / params.selfCollisionPairCount;
+    const uint pairIndex = gid - env * params.selfCollisionPairCount;
+    const HumanoidCollisionPairGPUConstants pair = pairs[pairIndex];
+    const uint linkA = pair.linkA;
+    const uint linkB = pair.linkB;
+    const float penetration = contactPenetrations[gid];
+    const uint pointBase = gid * 3u;
+    const uint frictionBase = gid * 2u;
+    const uint diagnosticsBase = env * 4u;
+
+    if (penetration <= 0.0f) {
+        selfNormalImpulses[gid] = 0.0f;
+        selfFrictionImpulses[frictionBase + 0u] = 0.0f;
+        selfFrictionImpulses[frictionBase + 1u] = 0.0f;
+        return;
+    }
+
+    const HumanoidLinkGPUConstants matA = links[linkA];
+    const HumanoidLinkGPUConstants matB = links[linkB];
+    const uint baseA3 = (env * params.linkCount + linkA) * 3u;
+    const uint baseB3 = (env * params.linkCount + linkB) * 3u;
+    const uint baseA4 = (env * params.linkCount + linkA) * 4u;
+    const uint baseB4 = (env * params.linkCount + linkB) * 4u;
+    const float3 positionA = load_float3(linkPositions, baseA3);
+    const float3 positionB = load_float3(linkPositions, baseB3);
+    const float4 rotationA = load_quat(linkRotations, baseA4);
+    const float4 rotationB = load_quat(linkRotations, baseB4);
+    float3 linearA = load_float3(linkLinearVelocities, baseA3);
+    float3 linearB = load_float3(linkLinearVelocities, baseB3);
+    float3 angularA = load_float3(linkAngularVelocities, baseA3);
+    float3 angularB = load_float3(linkAngularVelocities, baseB3);
+
+    const float3 normalAB = normalize(load_float3(contactNormals, pointBase));
+    const float3 contactWorld = load_float3(contactPoints, pointBase);
+
+    const float3 offsetA = contactWorld - positionA;
+    const float3 offsetB = contactWorld - positionB;
+    const float3 angularAxisA = cross(offsetA, normalAB);
+    const float3 angularAxisB = cross(offsetB, normalAB);
+    const float normalRowInvMass = matA.invMass + matB.invMass
+        + inverse_inertia_quadratic_world(matA, rotationA, angularAxisA)
+        + inverse_inertia_quadratic_world(matB, rotationB, angularAxisB);
+
+    float3 tangent1;
+    {
+        const float3 candidate = (abs(normalAB.z) < 0.95f) ? cross(normalAB, float3(0.0f, 0.0f, 1.0f)) : cross(normalAB, float3(1.0f, 0.0f, 0.0f));
+        const float candidateLength = length(candidate);
+        if (candidateLength > 1.0e-7f) {
+            tangent1 = candidate / candidateLength;
+        } else {
+            tangent1 = float3(1.0f, 0.0f, 0.0f);
+        }
+    }
+    const float3 tangent2 = normalize(cross(normalAB, tangent1));
+
+    const float3 t1AngularA = cross(offsetA, tangent1);
+    const float3 t1AngularB = cross(offsetB, tangent1);
+    const float t1RowInvMass = matA.invMass + matB.invMass
+        + inverse_inertia_quadratic_world(matA, rotationA, t1AngularA)
+        + inverse_inertia_quadratic_world(matB, rotationB, t1AngularB);
+    const float3 t2AngularA = cross(offsetA, tangent2);
+    const float3 t2AngularB = cross(offsetB, tangent2);
+    const float t2RowInvMass = matA.invMass + matB.invMass
+        + inverse_inertia_quadratic_world(matA, rotationA, t2AngularA)
+        + inverse_inertia_quadratic_world(matB, rotationB, t2AngularB);
+
+    const float relativeNormalVelocityInitial = dot(
+        (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+        normalAB
+    );
+    const float restitutionTarget = (relativeNormalVelocityInitial < -1.0e-2f)
+        ? (-params.contactRestitution * relativeNormalVelocityInitial)
+        : 0.0f;
+    const float selfLinearSlop = 0.05f;
+    const float baumgarteVelocity = max(0.0f, penetration - selfLinearSlop) * params.contactBaumgarte / max(params.dt, 1.0e-6f);
+    const float normalTargetVelocity = max(restitutionTarget, baumgarteVelocity);
+
+    float maxConstraintError = solverDiagnostics[diagnosticsBase + 0u];
+    float maxImpulseMagnitude = solverDiagnostics[diagnosticsBase + 1u];
+    float nonFiniteCount = solverDiagnostics[diagnosticsBase + 2u];
+    float rowFailureCount = solverDiagnostics[diagnosticsBase + 3u];
+
+    if (normalRowInvMass <= 1.0e-7f) {
+        rowFailureCount += 1.0f;
+    } else {
+        const float relativeNormalVelocity = dot(
+            (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+            normalAB
+        );
+        float normalLambda = (normalTargetVelocity - relativeNormalVelocity) / normalRowInvMass;
+        const float oldNormal = selfNormalImpulses[gid];
+        const float newNormal = max(0.0f, oldNormal + normalLambda);
+        normalLambda = newNormal - oldNormal;
+        selfNormalImpulses[gid] = newNormal;
+        linearA -= normalAB * (normalLambda * matA.invMass);
+        angularA -= inverse_inertia_mul_world(matA, rotationA, angularAxisA) * normalLambda;
+        linearB += normalAB * (normalLambda * matB.invMass);
+        angularB += inverse_inertia_mul_world(matB, rotationB, angularAxisB) * normalLambda;
+        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newNormal));
+        maxConstraintError = max(maxConstraintError, penetration);
+    }
+
+    const float frictionLimit = params.contactFriction * selfNormalImpulses[gid];
+    if (t1RowInvMass > 1.0e-7f) {
+        const float relativeT1 = dot(
+            (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+            tangent1
+        );
+        float t1Lambda = -relativeT1 / t1RowInvMass;
+        const float oldT1 = selfFrictionImpulses[frictionBase + 0u];
+        const float newT1 = clamp(oldT1 + t1Lambda, -frictionLimit, frictionLimit);
+        t1Lambda = newT1 - oldT1;
+        selfFrictionImpulses[frictionBase + 0u] = newT1;
+        linearA -= tangent1 * (t1Lambda * matA.invMass);
+        angularA -= inverse_inertia_mul_world(matA, rotationA, t1AngularA) * t1Lambda;
+        linearB += tangent1 * (t1Lambda * matB.invMass);
+        angularB += inverse_inertia_mul_world(matB, rotationB, t1AngularB) * t1Lambda;
+        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newT1));
+    }
+    if (t2RowInvMass > 1.0e-7f) {
+        const float relativeT2 = dot(
+            (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+            tangent2
+        );
+        float t2Lambda = -relativeT2 / t2RowInvMass;
+        const float oldT2 = selfFrictionImpulses[frictionBase + 1u];
+        const float newT2 = clamp(oldT2 + t2Lambda, -frictionLimit, frictionLimit);
+        t2Lambda = newT2 - oldT2;
+        selfFrictionImpulses[frictionBase + 1u] = newT2;
+        linearA -= tangent2 * (t2Lambda * matA.invMass);
+        angularA -= inverse_inertia_mul_world(matA, rotationA, t2AngularA) * t2Lambda;
+        linearB += tangent2 * (t2Lambda * matB.invMass);
+        angularB += inverse_inertia_mul_world(matB, rotationB, t2AngularB) * t2Lambda;
+        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newT2));
+    }
+
+    if (!all(isfinite(linearA)) || !all(isfinite(linearB)) ||
+        !all(isfinite(angularA)) || !all(isfinite(angularB))) {
+        nonFiniteCount += 1.0f;
+    }
+
+    solverDiagnostics[diagnosticsBase + 0u] = maxConstraintError;
+    solverDiagnostics[diagnosticsBase + 1u] = maxImpulseMagnitude;
+    solverDiagnostics[diagnosticsBase + 2u] = nonFiniteCount;
+    solverDiagnostics[diagnosticsBase + 3u] = rowFailureCount;
+
+    store_float3(linkLinearVelocities, baseA3, linearA);
+    store_float3(linkLinearVelocities, baseB3, linearB);
+    store_float3(linkAngularVelocities, baseA3, angularA);
+    store_float3(linkAngularVelocities, baseB3, angularB);
+}
+
+kernel void humanoid_solve_selected_self_contact(
+    device const HumanoidLinkGPUConstants *links [[buffer(0)]],
+    device const HumanoidCollisionPairGPUConstants *pairs [[buffer(1)]],
+    constant HumanoidEnvParams &params [[buffer(2)]],
+    device float *linkPositions [[buffer(3)]],
+    device float *linkRotations [[buffer(4)]],
+    device float *linkLinearVelocities [[buffer(5)]],
+    device float *linkAngularVelocities [[buffer(6)]],
+    device const float *contactPoints [[buffer(7)]],
+    device const float *contactNormals [[buffer(8)]],
+    device const float *contactPenetrations [[buffer(9)]],
+    device float *selfNormalImpulses [[buffer(10)]],
+    device float *selfFrictionImpulses [[buffer(11)]],
+    device float *solverDiagnostics [[buffer(12)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (params.selfCollisionPairCount == 0u || params.selectedSelfCollisionPair >= params.selfCollisionPairCount) {
+        return;
+    }
+    if (gid >= params.envCount) {
+        return;
+    }
+
+    const uint env = gid;
+    const uint pairIndex = params.selectedSelfCollisionPair;
+    const uint contactIndex = env * params.selfCollisionPairCount + pairIndex;
+    const HumanoidCollisionPairGPUConstants pair = pairs[pairIndex];
+    const uint linkA = pair.linkA;
+    const uint linkB = pair.linkB;
+    const float penetration = contactPenetrations[contactIndex];
+    const uint pointBase = contactIndex * 3u;
+    const uint frictionBase = contactIndex * 2u;
+    const uint diagnosticsBase = env * 4u;
+
+    if (penetration <= 0.0f) {
+        selfNormalImpulses[contactIndex] = 0.0f;
+        selfFrictionImpulses[frictionBase + 0u] = 0.0f;
+        selfFrictionImpulses[frictionBase + 1u] = 0.0f;
+        return;
+    }
+
+    const HumanoidLinkGPUConstants matA = links[linkA];
+    const HumanoidLinkGPUConstants matB = links[linkB];
+    const uint baseA3 = (env * params.linkCount + linkA) * 3u;
+    const uint baseB3 = (env * params.linkCount + linkB) * 3u;
+    const uint baseA4 = (env * params.linkCount + linkA) * 4u;
+    const uint baseB4 = (env * params.linkCount + linkB) * 4u;
+    const float3 positionA = load_float3(linkPositions, baseA3);
+    const float3 positionB = load_float3(linkPositions, baseB3);
+    const float4 rotationA = load_quat(linkRotations, baseA4);
+    const float4 rotationB = load_quat(linkRotations, baseB4);
+    float3 linearA = load_float3(linkLinearVelocities, baseA3);
+    float3 linearB = load_float3(linkLinearVelocities, baseB3);
+    float3 angularA = load_float3(linkAngularVelocities, baseA3);
+    float3 angularB = load_float3(linkAngularVelocities, baseB3);
+
+    const float3 normalAB = normalize(load_float3(contactNormals, pointBase));
+    const float3 contactWorld = load_float3(contactPoints, pointBase);
+
+    const float3 offsetA = contactWorld - positionA;
+    const float3 offsetB = contactWorld - positionB;
+    const float3 angularAxisA = cross(offsetA, normalAB);
+    const float3 angularAxisB = cross(offsetB, normalAB);
+    const float normalRowInvMass = matA.invMass + matB.invMass
+        + inverse_inertia_quadratic_world(matA, rotationA, angularAxisA)
+        + inverse_inertia_quadratic_world(matB, rotationB, angularAxisB);
+
+    float3 tangent1;
+    {
+        const float3 candidate = (abs(normalAB.z) < 0.95f) ? cross(normalAB, float3(0.0f, 0.0f, 1.0f)) : cross(normalAB, float3(1.0f, 0.0f, 0.0f));
+        const float candidateLength = length(candidate);
+        tangent1 = (candidateLength > 1.0e-7f) ? candidate / candidateLength : float3(1.0f, 0.0f, 0.0f);
+    }
+    const float3 tangent2 = normalize(cross(normalAB, tangent1));
+
+    const float3 t1AngularA = cross(offsetA, tangent1);
+    const float3 t1AngularB = cross(offsetB, tangent1);
+    const float t1RowInvMass = matA.invMass + matB.invMass
+        + inverse_inertia_quadratic_world(matA, rotationA, t1AngularA)
+        + inverse_inertia_quadratic_world(matB, rotationB, t1AngularB);
+    const float3 t2AngularA = cross(offsetA, tangent2);
+    const float3 t2AngularB = cross(offsetB, tangent2);
+    const float t2RowInvMass = matA.invMass + matB.invMass
+        + inverse_inertia_quadratic_world(matA, rotationA, t2AngularA)
+        + inverse_inertia_quadratic_world(matB, rotationB, t2AngularB);
+
+    const float relativeNormalVelocityInitial = dot(
+        (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+        normalAB
+    );
+    const float restitutionTarget = (relativeNormalVelocityInitial < -1.0e-2f)
+        ? (-params.contactRestitution * relativeNormalVelocityInitial)
+        : 0.0f;
+    const float selfLinearSlop = 0.05f;
+    const float baumgarteVelocity = max(0.0f, penetration - selfLinearSlop) * params.contactBaumgarte / max(params.dt, 1.0e-6f);
+    const float normalTargetVelocity = max(restitutionTarget, baumgarteVelocity);
+
+    float maxConstraintError = solverDiagnostics[diagnosticsBase + 0u];
+    float maxImpulseMagnitude = solverDiagnostics[diagnosticsBase + 1u];
+    float nonFiniteCount = solverDiagnostics[diagnosticsBase + 2u];
+    float rowFailureCount = solverDiagnostics[diagnosticsBase + 3u];
+
+    if (normalRowInvMass <= 1.0e-7f) {
+        rowFailureCount += 1.0f;
+    } else {
+        const float relativeNormalVelocity = dot(
+            (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+            normalAB
+        );
+        float normalLambda = (normalTargetVelocity - relativeNormalVelocity) / normalRowInvMass;
+        const float oldNormal = selfNormalImpulses[contactIndex];
+        const float newNormal = max(0.0f, oldNormal + normalLambda);
+        normalLambda = newNormal - oldNormal;
+        selfNormalImpulses[contactIndex] = newNormal;
+        linearA -= normalAB * (normalLambda * matA.invMass);
+        angularA -= inverse_inertia_mul_world(matA, rotationA, angularAxisA) * normalLambda;
+        linearB += normalAB * (normalLambda * matB.invMass);
+        angularB += inverse_inertia_mul_world(matB, rotationB, angularAxisB) * normalLambda;
+        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newNormal));
+        maxConstraintError = max(maxConstraintError, penetration);
+    }
+
+    const float frictionLimit = params.contactFriction * selfNormalImpulses[contactIndex];
+    if (t1RowInvMass > 1.0e-7f) {
+        const float relativeT1 = dot(
+            (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+            tangent1
+        );
+        float t1Lambda = -relativeT1 / t1RowInvMass;
+        const float oldT1 = selfFrictionImpulses[frictionBase + 0u];
+        const float newT1 = clamp(oldT1 + t1Lambda, -frictionLimit, frictionLimit);
+        t1Lambda = newT1 - oldT1;
+        selfFrictionImpulses[frictionBase + 0u] = newT1;
+        linearA -= tangent1 * (t1Lambda * matA.invMass);
+        angularA -= inverse_inertia_mul_world(matA, rotationA, t1AngularA) * t1Lambda;
+        linearB += tangent1 * (t1Lambda * matB.invMass);
+        angularB += inverse_inertia_mul_world(matB, rotationB, t1AngularB) * t1Lambda;
+        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newT1));
+    }
+    if (t2RowInvMass > 1.0e-7f) {
+        const float relativeT2 = dot(
+            (linearB + cross(angularB, offsetB)) - (linearA + cross(angularA, offsetA)),
+            tangent2
+        );
+        float t2Lambda = -relativeT2 / t2RowInvMass;
+        const float oldT2 = selfFrictionImpulses[frictionBase + 1u];
+        const float newT2 = clamp(oldT2 + t2Lambda, -frictionLimit, frictionLimit);
+        t2Lambda = newT2 - oldT2;
+        selfFrictionImpulses[frictionBase + 1u] = newT2;
+        linearA -= tangent2 * (t2Lambda * matA.invMass);
+        angularA -= inverse_inertia_mul_world(matA, rotationA, t2AngularA) * t2Lambda;
+        linearB += tangent2 * (t2Lambda * matB.invMass);
+        angularB += inverse_inertia_mul_world(matB, rotationB, t2AngularB) * t2Lambda;
+        maxImpulseMagnitude = max(maxImpulseMagnitude, abs(newT2));
+    }
+
+    if (!all(isfinite(linearA)) || !all(isfinite(linearB)) ||
+        !all(isfinite(angularA)) || !all(isfinite(angularB))) {
+        nonFiniteCount += 1.0f;
+    }
+
+    solverDiagnostics[diagnosticsBase + 0u] = maxConstraintError;
+    solverDiagnostics[diagnosticsBase + 1u] = maxImpulseMagnitude;
+    solverDiagnostics[diagnosticsBase + 2u] = nonFiniteCount;
+    solverDiagnostics[diagnosticsBase + 3u] = rowFailureCount;
+
+    store_float3(linkLinearVelocities, baseA3, linearA);
+    store_float3(linkLinearVelocities, baseB3, linearB);
+    store_float3(linkAngularVelocities, baseA3, angularA);
+    store_float3(linkAngularVelocities, baseB3, angularB);
 }
 
 kernel void humanoid_sync_root_from_pelvis(

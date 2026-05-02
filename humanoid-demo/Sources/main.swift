@@ -78,6 +78,7 @@ func runHumanoidDemo() throws {
         frames: frames,
         linkNames: humanoid.linkNames,
         parentLinkIndices: humanoid.parentLinkIndices,
+        collisionShapes: humanoid.readCollisionConstants(),
         to: URL(fileURLWithPath: replayPath),
         title: "Humanoid Elastic Joint Replay"
     )
@@ -102,4 +103,3 @@ do {
     fputs("error: \(error)\n", stderr)
     exit(1)
 }
-

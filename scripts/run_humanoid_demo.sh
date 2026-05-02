@@ -16,9 +16,9 @@ swiftc \
   "$ROOT_DIR/src/envs/humanoid/HumanoidTypes.swift" \
   "$ROOT_DIR/src/envs/humanoid/HumanoidRobotLoader.swift" \
   "$ROOT_DIR/src/envs/humanoid/HumanoidMetalEnvironment.swift" \
+  "$ROOT_DIR/src/envs/humanoid/HumanoidStandingVectorEnvDriver.swift" \
   "$ROOT_DIR/src/envs/humanoid/HumanoidHTMLReplay.swift" \
   "$PROJECT_DIR/Sources/main.swift" \
   -o "$BUILD_DIR/humanoid-demo"
 
 METAL_SMOKE_ROOT="$ROOT_DIR" "$BUILD_DIR/humanoid-demo"
-

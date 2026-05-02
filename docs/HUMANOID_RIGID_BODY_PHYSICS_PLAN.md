@@ -24,6 +24,7 @@ Already present:
 - `tools/synthetic.py`
 - `tools/validator.py`
 - Swift humanoid JSON loader/validator
+- schema-version validation that rejects unsupported humanoid specs with expected-version context
 - GPU humanoid reset
 - GPU elastic joint stepping
 - GPU joint-limit clamp
@@ -45,10 +46,10 @@ Current limitation:
 
 - The humanoid is not yet a full rigid-body simulator.
 - The full standing path is an early GPU integration path, not a production-quality humanoid dynamics solver.
-- Joint anchors, fixed/revolute/prismatic angular constraints, motor rows, and joint-limit rows are solved with effective-mass rows and accumulated warm-started impulses. Spherical joints still permit three-axis rotation, with swing-cone and twist/per-axis limits instead of an orientation lock.
-- Ground contact is implemented for one collision primitive per link against a plane.
-- Self-collision candidate detection is implemented for sphere-sphere and capsule-capsule only. Self-contact solving, convex hull contact, and terrain meshes are not implemented.
-- Contact solving uses a simple split position correction plus normal/tangent velocity projection for ground contacts. It is not yet a full iterative impulse solver with accumulated impulses and warm starting.
+- Joint anchors, fixed/revolute/prismatic angular constraints, motor rows, and joint-limit rows are solved with effective-mass rows and accumulated warm-started impulses. Spherical joints still permit three-axis rotation, with a quaternion swing-twist cone clamp plus twist limits instead of an orientation lock.
+- Ground contact is implemented for one collision primitive per link against a plane. Position correction, accumulated normal/friction impulses, and a configurable restitution coefficient are split across dedicated kernels.
+- Self-collision candidate detection is implemented for supported non-adjacent box-box, sphere-sphere, and capsule-capsule pairs. A separate iterative self-contact velocity solver is available through the `solveSelfContacts` API, and `stepStanding` runs self-contact by default through a serial pair pass that avoids parallel writes to shared links.
+- Convex hull collision assets are loaded from OBJ vertices and represented by conservative local AABB proxies for ground/self contact. Terrain meshes are still not implemented. Self-contact detection now has a conservative bounding-sphere pair cull; spatial broadphase acceleration remains future work.
 
 ## Engine State Needed
 
@@ -198,7 +199,7 @@ Work:
 - Implemented: long zero-action `stepStanding` stress rollout keeps state, contact penetration, and accumulated impulses finite.
 - Implemented: adversarial one-joint repro covers high mass ratio, tiny child inertia, off-center anchor displacement, high initial velocity, and a low iteration count.
 - Implemented: nonzero-action chain/contact standing stress keeps exported state, contact penetration, solver diagnostics, and accumulated motor/limit impulses finite.
-- Remaining: learned-control stress before claiming production-grade humanoid behavior.
+- Implemented: learned-control stress collects a humanoid actor-critic rollout through `stepStanding`, computes GAE/PPO data, and applies one optimizer step while keeping rollout, losses, and rigid-body state finite.
 
 Recommended solver:
 
@@ -218,11 +219,11 @@ Validation:
 - Implemented: fixed joint reduces deliberately injected child orientation error in a generated one-joint repro.
 - Implemented: revolute joint reduces deliberately injected hinge-axis error and removes off-axis relative angular velocity in a generated repro.
 - Implemented: prismatic joint reduces perpendicular anchor error, preserves slider-axis offset, and reduces orientation error in a generated repro.
-- Implemented: spherical joint preserves anchor position and permits 3-axis rotation.
+- Implemented: spherical joint preserves anchor position and permits 3-axis rotation, with a quaternion swing-twist cone clamp that pulls a deliberately over-rotated hip back toward the swing limit and accumulates a corrective angular impulse.
 - Implemented: longer contact-coupled zero-action standing stress keeps state and impulses finite.
 - Implemented: adversarial one-joint mass/inertia/anchor/velocity repro reduces error and reports clean solver diagnostics.
 - Implemented: nonzero-action multi-link standing stress with contact and gravity keeps state finite and contacts resolved within tolerance.
-- Remaining: learned-control stress before claiming production-grade humanoid joint behavior.
+- Implemented: learned-control actor-critic rollout/optimizer stress keeps humanoid state finite and requires one PPO optimizer step to reduce loss on the collected humanoid batch.
 
 Failure discipline:
 
@@ -272,7 +273,7 @@ Failure discipline:
 
 Goal: generate contact candidates for robot-ground and robot-self collisions.
 
-Status: implemented for the initial shape set. The GPU path uploads one collision primitive per link, detects ground-plane contacts for box, sphere, capsule, and cylinder primitives, and detects self-collision candidates for sphere-sphere and capsule-capsule pairs. The smoke harness verifies penetrating/separated cases and checks generated two-link self-collision scenes produce exactly one active pair.
+Status: implemented for the initial shape set. The GPU path uploads one collision primitive per link, detects ground-plane contacts for box, sphere, capsule, cylinder, and convex-hull AABB proxy primitives, and detects self-collision candidates for box-box, convex-proxy/box-compatible, sphere-sphere, and capsule-capsule pairs. The smoke harness verifies penetrating/separated cases and checks generated two-link self-collision scenes produce exactly one active pair.
 
 Start with:
 
@@ -285,9 +286,9 @@ Start with:
 
 Later:
 
-- box-box
-- convex hull-plane
-- convex hull-convex hull
+- Implemented: box-box
+- Implemented: convex hull-plane through a conservative local AABB proxy built from OBJ vertices.
+- Implemented: convex hull-convex hull through the same local AABB proxy narrowphase used for boxes.
 - static triangle mesh terrain
 
 Do not use visual triangle meshes for dynamic robot collision.
@@ -299,7 +300,7 @@ Validation:
 - Implemented: contact point is finite for simple primitive-plane cases.
 - Implemented: contact normal points from the first self-collision body toward the second.
 - Implemented: self-collision penetration is positive only when overlapping.
-- Implemented: contact point is finite for sphere-sphere and capsule-capsule.
+- Implemented: contact point is finite for box-box, convex-hull proxy, sphere-sphere, and capsule-capsule.
 - Implemented: generated two-link self-collision repros produce exactly one active pair.
 
 Failure discipline:
@@ -311,24 +312,35 @@ Failure discipline:
 
 Goal: prevent bodies from penetrating the ground and support friction.
 
-Status: implemented for ground-plane contacts. The GPU solver consumes the contact buffers, corrects penetration, removes inward normal velocity, and applies bounded tangent friction. It is intentionally simple and does not yet accumulate impulses or warm start.
+Status: implemented for ground-plane contacts as a multi-pass sequential-impulse solver. Position correction runs once per step in its own kernel, contact impulses are explicitly cleared before the velocity passes, and the velocity solver iterates effective-mass normal and friction rows with accumulated impulses and a configurable restitution coefficient. A self-contact velocity solver is available as a separate API (`solveSelfContacts`), and `stepStanding` has an opt-in serial self-contact path for supported non-adjacent pairs.
 
 Work:
 
 - Implemented: build contact rows from ground-plane contact buffers.
 - Implemented: solve normal velocity with non-negative projection.
-- Implemented: split position correction for penetration.
-- Implemented: bounded friction tangent velocity reduction.
-- Remaining: accumulated impulses and warm starting.
-- Remaining: restitution; default remains 0.
+- Implemented: split position correction for penetration in a dedicated kernel.
+- Implemented: bounded friction tangent velocity reduction with two orthogonal tangent rows.
+- Implemented: per-link accumulated normal and friction impulses, cleared each step before the velocity pass and zeroed on reset.
+- Implemented: configurable restitution coefficient on the velocity row, validated for 0/0.5/1.0 bounce behavior.
+- Implemented: self-contact velocity solver kernel and `solveSelfContacts` API that pushes overlapping sphere/capsule pairs apart.
+- Implemented: supported self-collision pair generation skips unsupported shapes and joint-connected pairs for full humanoid specs.
+- Implemented: default-on race-free self-contact integration inside `stepStanding` by scheduling one selected pair per GPU dispatch.
+- Implemented: full humanoid zero-action standing stress with default self-contact enabled keeps state finite and ground contact resolved.
+- Implemented: conservative bounding-sphere broadphase cull before supported self-contact narrowphase.
+- Remaining: faster colored/batched self-contact scheduling and spatial broadphase for higher-throughput full humanoid self-collision.
 
 Validation:
 
 - Implemented: a falling box lands on the plane and does not retain penetration at small dt.
 - Implemented: resting contacts do not gain energy.
 - Implemented: friction slows horizontal sliding.
-- Remaining: sphere/capsule falling loops.
-- Remaining: foot boxes supporting articulated vertical load as a stable standing policy/control test.
+- Implemented: contact restitution=0 zeros incoming normal velocity; restitution=0.5 and restitution=1.0 produce successively higher upward bounce velocity in a generated repro.
+- Implemented: ground normal impulses accumulate on contact and are cleared on reset.
+- Implemented: self-contact velocity solver pushes a pair of penetrating spheres apart, transfers momentum to the static partner, and accumulates per-pair normal impulses cleared on reset.
+- Implemented: default `stepStanding` self-contact keeps a full humanoid zero-action stress finite, and `stepStanding(..., solveSelfContact: true)` reduces overlap in a generated self-contact repro.
+- Implemented: sphere and capsule falling loops land without retained ground penetration.
+- Implemented: foot box contacts accumulate support impulse in the articulated standing path.
+- Implemented: learned-control standing policy stress with an MLP Gaussian actor-critic rollout, GAE/PPO batch construction, and one finite optimizer update.
 
 Failure discipline:
 
@@ -339,7 +351,7 @@ Failure discipline:
 
 Goal: run many humanoids in parallel with ground contact.
 
-Status: implemented as an early GPU standing-step path. `stepStanding` runs joint motors, FK, gravity, joint anchor constraints, ground contact detection/solve, pelvis-to-root sync, and observation/reward/done export. The smoke harness runs 1024 lanes for repeated zero-action standing steps and checks finite outputs, contact resolution, and feet reaching the ground. This is not yet a stable learned standing task or a full humanoid controller.
+Status: implemented as an early GPU standing-step path. `stepStanding` runs joint motors, FK, gravity, joint anchor constraints, ground contact detection/solve, default serial self-contact resolution, pelvis-to-root sync, and observation/reward/done export. The smoke harness runs 1024 lanes for repeated zero-action standing steps and checks finite outputs, contact resolution, and feet reaching the ground. This is not yet a stable learned standing task or a full humanoid controller.
 
 Environment:
 
@@ -363,6 +375,7 @@ Validation:
 - Implemented: rewards/dones are finite.
 - Implemented: 1024 env lanes step without CPU fallback.
 - Implemented: deterministic replay test specific to `stepStanding` compares two reset/spec/action-matched GPU runs, including outputs, link state, contact penetrations, and joint state.
+- Implemented: default-on `stepStanding` self-contact keeps a full humanoid stress finite; explicit self-contact pass reduces overlap in a generated supported-pair repro.
 
 Failure discipline:
 
@@ -383,7 +396,10 @@ Current renderer:
 - Shows ground plane.
 - Shows link positions.
 - Shows parent-child skeleton.
+- Shows primitive collision shape overlays.
+- Shows contact points and normals from GPU contact buffers.
 - Shows frame, reward, done, reset count, and env index.
+- Exports replay JSON alongside the HTML replay.
 
 Current renderer output:
 
@@ -393,16 +409,14 @@ humanoid_replay.html
 
 Remaining renderer work:
 
-- Show primitive collision shapes.
-- Show contact points and normals.
 - Show joint limit violations in color.
-- Export replay JSON alongside the HTML replay.
+- Add a per-kernel profiler hook that prints the slowest kernels per step.
 
-Future video path:
+Video path:
 
 1. Generate replay JSON/HTML from GPU readback of selected lanes.
-2. Open replay in browser for manual inspection.
-3. Add a Playwright or browser automation script to capture frames.
+2. Open replay in browser for manual inspection, or run the script below.
+3. Capture replay JSON frames through headless Chrome/Chromium.
 4. Encode frames to MP4 with `ffmpeg`.
 
 Example future command:
@@ -415,12 +429,14 @@ Example future command:
 Validation:
 
 - Implemented: replay HTML is written by the humanoid smoke check.
-- Implemented: replay frame writer rejects empty input and shape mismatches.
-- Remaining: replay has the expected number of frames.
-- Remaining: no frame has NaN/Inf positions.
-- Remaining: camera bounds include the humanoid.
-- Remaining: contact markers line up with collision shapes.
-- Remaining: video generation fails loudly if browser/ffmpeg is missing.
+- Implemented: replay frame writer rejects empty input, shape mismatches, and non-finite positions.
+- Implemented: replay has the expected number of frames.
+- Implemented: replay JSON is written alongside HTML and includes collision shapes plus contact buffers.
+- Implemented: HTML includes collision shape and contact marker rendering paths.
+- Implemented: HTML computes camera bounds from all replay frames so selected lanes stay in view.
+- Implemented: video render command fails loudly for missing replay JSON, browser backend, or `ffmpeg`.
+- Implemented: video render command captures replay frames through headless Chrome/Chromium and encodes MP4 with `ffmpeg`.
+- Implemented: humanoid loader rejects unsupported `schema_version` values with an error that points to the expected version.
 
 ## Smoke Harness Requirements
 

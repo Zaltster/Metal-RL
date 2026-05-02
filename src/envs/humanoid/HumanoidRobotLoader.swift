@@ -13,7 +13,9 @@ func validateHumanoidRobotSpec(_ spec: HumanoidRobotSpec) throws -> HumanoidVali
     var warnings: [String] = []
 
     if spec.schema_version != "1.0" {
-        warnings.append("Unexpected humanoid schema_version \(spec.schema_version); expected 1.0.")
+        throw EnvProjectError.validationFailed(
+            message: "Humanoid spec schema_version \(spec.schema_version) is unsupported; expected 1.0."
+        )
     }
     if spec.units != "SI" {
         throw EnvProjectError.validationFailed(message: "Humanoid spec units must be SI.")
@@ -217,8 +219,8 @@ func makeHumanoidLinkConstants(spec: HumanoidRobotSpec) throws -> [HumanoidLinkG
     }
 }
 
-func makeHumanoidCollisionConstants(spec: HumanoidRobotSpec) -> [HumanoidCollisionGPUConstants] {
-    spec.links.map { link in
+func makeHumanoidCollisionConstants(spec: HumanoidRobotSpec, baseURL: URL) throws -> [HumanoidCollisionGPUConstants] {
+    try spec.links.map { link in
         guard let shape = link.collision.first else {
             return HumanoidCollisionGPUConstants(
                 type: 0,
@@ -262,18 +264,29 @@ func makeHumanoidCollisionConstants(spec: HumanoidRobotSpec) -> [HumanoidCollisi
                 params["half_length"]?.floatValue ?? 0.0,
                 0.0,
             ]
+        case "convex_hull":
+            typeCode = 5
+            guard case let .string(verticesFile)? = params["vertices_file"] else {
+                throw EnvProjectError.validationFailed(message: "Humanoid convex_hull collision requires vertices_file.")
+            }
+            dimensions = try makeConvexHullAABBParameters(
+                verticesURL: baseURL.appendingPathComponent(verticesFile)
+            )
         default:
             typeCode = 0
             dimensions = [0.0, 0.0, 0.0]
         }
+        let translationX = shape.transform.translation[0] + (dimensions.indices.contains(3) ? dimensions[3] : 0.0)
+        let translationY = shape.transform.translation[1] + (dimensions.indices.contains(4) ? dimensions[4] : 0.0)
+        let translationZ = shape.transform.translation[2] + (dimensions.indices.contains(5) ? dimensions[5] : 0.0)
         return HumanoidCollisionGPUConstants(
             type: typeCode,
             reserved0: 0,
             reserved1: 0,
             reserved2: 0,
-            translationX: shape.transform.translation[0],
-            translationY: shape.transform.translation[1],
-            translationZ: shape.transform.translation[2],
+            translationX: translationX,
+            translationY: translationY,
+            translationZ: translationZ,
             rotationX: shape.transform.rotation[0],
             rotationY: shape.transform.rotation[1],
             rotationZ: shape.transform.rotation[2],
@@ -285,10 +298,90 @@ func makeHumanoidCollisionConstants(spec: HumanoidRobotSpec) -> [HumanoidCollisi
     }
 }
 
-func makeHumanoidCollisionPairConstants(linkCount: Int) -> [HumanoidCollisionPairGPUConstants] {
+private func makeConvexHullAABBParameters(verticesURL: URL) throws -> [Float] {
+    let text: String
+    do {
+        text = try String(contentsOf: verticesURL, encoding: .utf8)
+    } catch {
+        throw EnvProjectError.validationFailed(
+            message: "Humanoid convex_hull vertices file could not be read: \(verticesURL.path)."
+        )
+    }
+
+    var mins = [Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude]
+    var maxs = [-Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude]
+    var vertexCount = 0
+    for line in text.split(whereSeparator: \.isNewline) {
+        let parts = line.split(whereSeparator: \.isWhitespace)
+        if parts.count < 4 || parts[0] != "v" {
+            continue
+        }
+        var values: [Float] = []
+        values.reserveCapacity(3)
+        for part in parts[1...3] {
+            guard let value = Float(part) else {
+                throw EnvProjectError.validationFailed(
+                    message: "Humanoid convex_hull vertices file has a non-numeric vertex: \(verticesURL.path)."
+                )
+            }
+            values.append(value)
+        }
+        for axis in 0..<3 {
+            mins[axis] = min(mins[axis], values[axis])
+            maxs[axis] = max(maxs[axis], values[axis])
+        }
+        vertexCount += 1
+    }
+    if vertexCount < 4 {
+        throw EnvProjectError.validationFailed(
+            message: "Humanoid convex_hull vertices file needs at least 4 vertices: \(verticesURL.path)."
+        )
+    }
+    let center = (0..<3).map { (mins[$0] + maxs[$0]) * 0.5 }
+    let halfExtents = (0..<3).map { (maxs[$0] - mins[$0]) * 0.5 }
+    if halfExtents.contains(where: { !$0.isFinite || $0 <= 0.0 }) {
+        throw EnvProjectError.validationFailed(
+            message: "Humanoid convex_hull vertices file has degenerate bounds: \(verticesURL.path)."
+        )
+    }
+    return [halfExtents[0], halfExtents[1], halfExtents[2], center[0], center[1], center[2]]
+}
+
+func makeHumanoidCollisionPairConstants(spec: HumanoidRobotSpec) -> [HumanoidCollisionPairGPUConstants] {
+    let linkCount = spec.links.count
+    let linkNameToIndex = Dictionary(uniqueKeysWithValues: spec.links.enumerated().map { ($0.element.name, $0.offset) })
+    let supportedSelfCollisionShapeTypes = Set(["box", "sphere", "capsule", "convex_hull"])
+    let selfCollisionEnabledLinks = spec.links.map { link -> Bool in
+        guard let shape = link.collision.first else {
+            return false
+        }
+        return supportedSelfCollisionShapeTypes.contains(shape.type)
+    }
+    let enabledLinkCount = selfCollisionEnabledLinks.filter { $0 }.count
+    var directlyConnected = Set<UInt64>()
+    func connectionKey(_ a: Int, _ b: Int) -> UInt64 {
+        let lo = UInt64(min(a, b))
+        let hi = UInt64(max(a, b))
+        return (lo << 32) | hi
+    }
+    for joint in spec.joints where joint.type != .free {
+        guard let parent = linkNameToIndex[joint.parent_link],
+              let child = linkNameToIndex[joint.child_link] else {
+            continue
+        }
+        directlyConnected.insert(connectionKey(parent, child))
+    }
+
     var pairs: [HumanoidCollisionPairGPUConstants] = []
     for linkA in 0..<linkCount {
+        if !selfCollisionEnabledLinks[linkA] {
+            continue
+        }
         for linkB in (linkA + 1)..<linkCount {
+            if !selfCollisionEnabledLinks[linkB] ||
+                (enabledLinkCount > 2 && directlyConnected.contains(connectionKey(linkA, linkB))) {
+                continue
+            }
             pairs.append(HumanoidCollisionPairGPUConstants(
                 linkA: UInt32(linkA),
                 linkB: UInt32(linkB),

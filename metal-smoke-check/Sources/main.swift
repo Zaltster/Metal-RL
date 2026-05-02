@@ -674,6 +674,41 @@ func expectValidationFailure(_ context: String, operation: () throws -> Void) th
     throw EnvProjectError.validationFailed(message: "\(context) did not fail validation.")
 }
 
+func makeDeterministicMLPActorCritic(
+    observationSpec: VectorObservationSpec,
+    actionSpec: VectorActionSpec,
+    hiddenDim: Int,
+    weightScale: Float
+) -> TrainableMLPActorCritic {
+    let obsDim = observationSpec.elementsPerEnv
+    let actionDim = actionSpec.dimensionsPerEnv
+    let inputWeights = (0..<(hiddenDim * obsDim)).map { index in
+        sin(Float(index + 1) * 0.173) * weightScale
+    }
+    let inputBias = (0..<hiddenDim).map { index in
+        cos(Float(index + 3) * 0.211) * weightScale
+    }
+    let outputWeights = (0..<(actionDim * hiddenDim)).map { index in
+        sin(Float(index + 5) * 0.097) * weightScale
+    }
+    let outputBias = Array(repeating: Float.zero, count: actionDim)
+    let valueWeights = (0..<hiddenDim).map { index in
+        cos(Float(index + 7) * 0.157) * weightScale
+    }
+    let policy = MLPPolicy(
+        inputWeights: inputWeights,
+        inputBias: inputBias,
+        outputWeights: outputWeights,
+        outputBias: outputBias,
+        valueWeights: valueWeights,
+        valueBias: 0.0
+    )
+    return TrainableMLPActorCritic(
+        policy: policy,
+        logStd: Array(repeating: Float(-1.2), count: actionDim)
+    )
+}
+
 func compareTrainableModels(
     lhs: TrainableMLPActorCritic,
     rhs: TrainableMLPActorCritic,
@@ -1661,6 +1696,30 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
     let specURL = URL(fileURLWithPath: rootDir).appending(path: "docs/humanoid_v1_baseline.json")
     let spec = try loadHumanoidRobotSpec(from: specURL)
     let report = try validateHumanoidRobotSpec(spec)
+    func validateSchemaVersionMismatchRejects() throws {
+        let data = try Data(contentsOf: specURL)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw EnvProjectError.validationFailed(message: "Humanoid schema-version repro could not parse JSON object.")
+        }
+        object["schema_version"] = "0.0"
+        let badData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let badURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("humanoid-bad-schema-\(UUID().uuidString).json")
+        try badData.write(to: badURL)
+        defer {
+            try? FileManager.default.removeItem(at: badURL)
+        }
+
+        let badSpec = try loadHumanoidRobotSpec(from: badURL)
+        do {
+            _ = try validateHumanoidRobotSpec(badSpec)
+        } catch EnvProjectError.validationFailed(let message)
+            where message.contains("schema_version") && message.contains("expected 1.0") {
+            return
+        }
+        throw EnvProjectError.validationFailed(message: "Humanoid schema_version mismatch was not rejected with expected-version context.")
+    }
+    try validateSchemaVersionMismatchRejects()
     func dofOffset(named jointName: String) throws -> Int {
         guard let row = report.dofLayout.joints.first(where: { $0.name == jointName }), row.size > 0 else {
             throw EnvProjectError.validationFailed(message: "Humanoid test joint \(jointName) is missing from DoF layout.")
@@ -1850,6 +1909,28 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
         let output = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted])
         try output.write(to: url)
         return url
+    }
+    func writeConvexHullBoxOBJ(filename: String, halfExtents: [Float]) throws {
+        if halfExtents.count != 3 {
+            throw EnvProjectError.validationFailed(message: "Convex hull test half-extents must have 3 values.")
+        }
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("metal-rl-humanoid-smoke", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let hx = halfExtents[0]
+        let hy = halfExtents[1]
+        let hz = halfExtents[2]
+        let text = """
+        v \(-hx) \(-hy) \(-hz)
+        v \(hx) \(-hy) \(-hz)
+        v \(-hx) \(hy) \(-hz)
+        v \(hx) \(hy) \(-hz)
+        v \(-hx) \(-hy) \(hz)
+        v \(hx) \(-hy) \(hz)
+        v \(-hx) \(hy) \(hz)
+        v \(hx) \(hy) \(hz)
+        """
+        try text.write(to: directory.appendingPathComponent(filename), atomically: true, encoding: .utf8)
     }
     if report.dofLayout.totalDoFs != 33 {
         throw EnvProjectError.validationFailed(
@@ -2571,6 +2652,44 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
         throw EnvProjectError.validationFailed(message: "Humanoid box-plane separated repro produced penetration.")
     }
 
+    try writeConvexHullBoxOBJ(filename: "convex_box.obj", halfExtents: [0.10, 0.08, 0.06])
+    let convexPlaneSpecURL = try writeSpecWithOnlyCollisionShapes(
+        filename: "humanoid_convex_plane_contact_repro.json",
+        shapes: [
+            "pelvis": (type: "convex_hull", params: ["vertices_file": "convex_box.obj"]),
+        ]
+    )
+    let convexPlaneHumanoid = try HumanoidMetalEnvironment(
+        device: device,
+        rootDir: rootDir,
+        envCount: 4,
+        specURL: convexPlaneSpecURL,
+        dt: 1.0 / 120.0
+    )
+    _ = try convexPlaneHumanoid.reset()
+    var convexPlanePositions = convexPlaneHumanoid.readLinkPositions()
+    let convexPlaneRotations = convexPlaneHumanoid.readLinkRotations()
+    for env in 0..<convexPlaneHumanoid.envCount {
+        let base = (env * convexPlaneHumanoid.linkCount + pelvisIndex) * 3
+        convexPlanePositions[base + 2] = 0.03
+    }
+    try convexPlaneHumanoid.loadLinkStateForValidation(positions: convexPlanePositions, rotations: convexPlaneRotations)
+    try convexPlaneHumanoid.detectGroundContacts()
+    penetrations = convexPlaneHumanoid.readContactPenetrations()
+    if !(penetrations[pelvisIndex] > 0.02) {
+        throw EnvProjectError.validationFailed(message: "Humanoid convex-hull plane contact repro did not penetrate.")
+    }
+    for env in 0..<convexPlaneHumanoid.envCount {
+        let base = (env * convexPlaneHumanoid.linkCount + pelvisIndex) * 3
+        convexPlanePositions[base + 2] = 0.20
+    }
+    try convexPlaneHumanoid.loadLinkStateForValidation(positions: convexPlanePositions, rotations: convexPlaneRotations)
+    try convexPlaneHumanoid.detectGroundContacts()
+    penetrations = convexPlaneHumanoid.readContactPenetrations()
+    if penetrations[pelvisIndex] != 0.0 {
+        throw EnvProjectError.validationFailed(message: "Humanoid convex-hull plane separated repro produced penetration.")
+    }
+
     var capsuleContactPositions = contactBaselinePositions
     for env in 0..<humanoid.envCount {
         let base = (env * humanoid.linkCount + shinIndex) * 3
@@ -2684,6 +2803,120 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
     selfPenetrations = sphereSphereHumanoid.readSelfContactPenetrations()
     if selfPenetrations[pelvisLumbarPair] != 0.0 {
         throw EnvProjectError.validationFailed(message: "Humanoid sphere-sphere separated repro produced penetration.")
+    }
+
+    let boxBoxSpecURL = try writeSpecWithOnlyCollisionShapes(
+        filename: "humanoid_box_box_contact_repro.json",
+        shapes: [
+            "pelvis": (type: "box", params: ["half_extents": [0.10, 0.10, 0.10]]),
+            "chest": (type: "box", params: ["half_extents": [0.10, 0.10, 0.10]]),
+        ]
+    )
+    let boxBoxHumanoid = try HumanoidMetalEnvironment(
+        device: device,
+        rootDir: rootDir,
+        envCount: 4,
+        specURL: boxBoxSpecURL,
+        dt: 1.0 / 120.0
+    )
+    guard let boxPair = boxBoxHumanoid.selfCollisionPairs.firstIndex(where: { $0 == pelvisIndex && $1 == chestIndex }) else {
+        throw EnvProjectError.validationFailed(message: "Humanoid box-box repro pair was not generated.")
+    }
+    _ = try boxBoxHumanoid.reset()
+    var boxBoxPositions = boxBoxHumanoid.readLinkPositions()
+    let boxBoxRotations = boxBoxHumanoid.readLinkRotations()
+    for env in 0..<boxBoxHumanoid.envCount {
+        let pelvisBase = (env * boxBoxHumanoid.linkCount + pelvisIndex) * 3
+        let chestBaseForEnv = (env * boxBoxHumanoid.linkCount + chestIndex) * 3
+        boxBoxPositions[pelvisBase + 0] = 0.0
+        boxBoxPositions[pelvisBase + 1] = 0.0
+        boxBoxPositions[pelvisBase + 2] = 0.0
+        boxBoxPositions[chestBaseForEnv + 0] = 0.15
+        boxBoxPositions[chestBaseForEnv + 1] = 0.0
+        boxBoxPositions[chestBaseForEnv + 2] = 0.0
+    }
+    try boxBoxHumanoid.loadLinkStateForValidation(positions: boxBoxPositions, rotations: boxBoxRotations)
+    try boxBoxHumanoid.detectSelfContacts()
+    selfPenetrations = boxBoxHumanoid.readSelfContactPenetrations()
+    selfNormals = boxBoxHumanoid.readSelfContactNormals()
+    selfPoints = boxBoxHumanoid.readSelfContactPoints()
+    let boxPairBase = boxPair * 3
+    let activeBoxPairs = selfPenetrations.prefix(boxBoxHumanoid.selfCollisionPairCount).filter { $0 > 0.0 }.count
+    if activeBoxPairs != 1 || !(selfPenetrations[boxPair] > 0.04) {
+        throw EnvProjectError.validationFailed(
+            message: "Humanoid box-box repro expected exactly one penetrating pair."
+        )
+    }
+    if !(selfNormals[boxPairBase] > 0.99) ||
+        !selfPoints[boxPairBase..<(boxPairBase + 3)].allSatisfy({ $0.isFinite }) {
+        throw EnvProjectError.validationFailed(message: "Humanoid box-box normal/contact point invalid.")
+    }
+    for env in 0..<boxBoxHumanoid.envCount {
+        let chestBaseForEnv = (env * boxBoxHumanoid.linkCount + chestIndex) * 3
+        boxBoxPositions[chestBaseForEnv + 0] = 0.25
+    }
+    try boxBoxHumanoid.loadLinkStateForValidation(positions: boxBoxPositions, rotations: boxBoxRotations)
+    try boxBoxHumanoid.detectSelfContacts()
+    selfPenetrations = boxBoxHumanoid.readSelfContactPenetrations()
+    if selfPenetrations[boxPair] != 0.0 {
+        throw EnvProjectError.validationFailed(message: "Humanoid box-box separated repro produced penetration.")
+    }
+
+    let convexConvexSpecURL = try writeSpecWithOnlyCollisionShapes(
+        filename: "humanoid_convex_convex_contact_repro.json",
+        shapes: [
+            "pelvis": (type: "convex_hull", params: ["vertices_file": "convex_box.obj"]),
+            "chest": (type: "convex_hull", params: ["vertices_file": "convex_box.obj"]),
+        ]
+    )
+    let convexConvexHumanoid = try HumanoidMetalEnvironment(
+        device: device,
+        rootDir: rootDir,
+        envCount: 4,
+        specURL: convexConvexSpecURL,
+        dt: 1.0 / 120.0
+    )
+    guard let convexPair = convexConvexHumanoid.selfCollisionPairs.firstIndex(where: { $0 == pelvisIndex && $1 == chestIndex }) else {
+        throw EnvProjectError.validationFailed(message: "Humanoid convex-hull repro pair was not generated.")
+    }
+    _ = try convexConvexHumanoid.reset()
+    var convexConvexPositions = convexConvexHumanoid.readLinkPositions()
+    let convexConvexRotations = convexConvexHumanoid.readLinkRotations()
+    for env in 0..<convexConvexHumanoid.envCount {
+        let pelvisBase = (env * convexConvexHumanoid.linkCount + pelvisIndex) * 3
+        let chestBaseForEnv = (env * convexConvexHumanoid.linkCount + chestIndex) * 3
+        convexConvexPositions[pelvisBase + 0] = 0.0
+        convexConvexPositions[pelvisBase + 1] = 0.0
+        convexConvexPositions[pelvisBase + 2] = 0.0
+        convexConvexPositions[chestBaseForEnv + 0] = 0.15
+        convexConvexPositions[chestBaseForEnv + 1] = 0.0
+        convexConvexPositions[chestBaseForEnv + 2] = 0.0
+    }
+    try convexConvexHumanoid.loadLinkStateForValidation(positions: convexConvexPositions, rotations: convexConvexRotations)
+    try convexConvexHumanoid.detectSelfContacts()
+    selfPenetrations = convexConvexHumanoid.readSelfContactPenetrations()
+    selfNormals = convexConvexHumanoid.readSelfContactNormals()
+    selfPoints = convexConvexHumanoid.readSelfContactPoints()
+    let convexPairBase = convexPair * 3
+    let activeConvexPairs = selfPenetrations.prefix(convexConvexHumanoid.selfCollisionPairCount).filter { $0 > 0.0 }.count
+    if activeConvexPairs != 1 || !(selfPenetrations[convexPair] > 0.02) {
+        throw EnvProjectError.validationFailed(
+            message: "Humanoid convex-hull repro expected exactly one penetrating pair."
+        )
+    }
+    if !(selfNormals[convexPairBase] > 0.99) ||
+        !selfPoints[convexPairBase..<(convexPairBase + 3)].allSatisfy({ $0.isFinite }) {
+        throw EnvProjectError.validationFailed(message: "Humanoid convex-hull normal/contact point invalid.")
+    }
+    for env in 0..<convexConvexHumanoid.envCount {
+        let chestBaseForEnv = (env * convexConvexHumanoid.linkCount + chestIndex) * 3
+        convexConvexPositions[chestBaseForEnv + 0] = 0.25
+    }
+    try convexConvexHumanoid.loadLinkStateForValidation(positions: convexConvexPositions, rotations: convexConvexRotations)
+    try convexConvexHumanoid.detectSelfContacts()
+    selfPenetrations = convexConvexHumanoid.readSelfContactPenetrations()
+    if selfPenetrations[convexPair] != 0.0 {
+        throw EnvProjectError.validationFailed(message: "Humanoid convex-hull separated repro produced penetration.")
     }
 
     let capsuleCapsuleSpecURL = try writeSpecWithOnlyCollisionShapes(
@@ -2810,6 +3043,52 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
         throw EnvProjectError.validationFailed(message: "Humanoid falling box did not land without penetration.")
     }
 
+    _ = try sphereHumanoid.reset()
+    var fallingSpherePositions = sphereHumanoid.readLinkPositions()
+    let fallingSphereRotations = sphereHumanoid.readLinkRotations()
+    var fallingSphereVelocities = Array(repeating: Float.zero, count: sphereHumanoid.envCount * sphereHumanoid.linkCount * 3)
+    for env in 0..<sphereHumanoid.envCount {
+        let positionBase = (env * sphereHumanoid.linkCount + headIndex) * 3
+        fallingSpherePositions[positionBase + 2] = 0.30
+        fallingSphereVelocities[positionBase + 2] = -2.0
+    }
+    try sphereHumanoid.loadLinkStateForValidation(positions: fallingSpherePositions, rotations: fallingSphereRotations)
+    try sphereHumanoid.loadLinkVelocitiesForValidation(
+        linear: fallingSphereVelocities,
+        angular: Array(repeating: Float.zero, count: sphereHumanoid.envCount * sphereHumanoid.linkCount * 3)
+    )
+    for _ in 0..<60 {
+        _ = try sphereHumanoid.integrateFreeBodies(gravity: [0.0, 0.0, -9.8], steps: 1)
+        _ = try sphereHumanoid.solveGroundContacts(baumgarte: 0.2, friction: 0.8)
+    }
+    penetrations = sphereHumanoid.readContactPenetrations()
+    if penetrations[headIndex] > tolerance {
+        throw EnvProjectError.validationFailed(message: "Humanoid falling sphere did not land without penetration.")
+    }
+
+    _ = try humanoid.reset()
+    var fallingCapsulePositions = humanoid.readLinkPositions()
+    let fallingCapsuleRotations = humanoid.readLinkRotations()
+    var fallingCapsuleVelocities = Array(repeating: Float.zero, count: humanoid.envCount * humanoid.linkCount * 3)
+    for env in 0..<humanoid.envCount {
+        let positionBase = (env * humanoid.linkCount + shinIndex) * 3
+        fallingCapsulePositions[positionBase + 2] = 0.50
+        fallingCapsuleVelocities[positionBase + 2] = -2.0
+    }
+    try humanoid.loadLinkStateForValidation(positions: fallingCapsulePositions, rotations: fallingCapsuleRotations)
+    try humanoid.loadLinkVelocitiesForValidation(
+        linear: fallingCapsuleVelocities,
+        angular: Array(repeating: Float.zero, count: humanoid.envCount * humanoid.linkCount * 3)
+    )
+    for _ in 0..<80 {
+        _ = try humanoid.integrateFreeBodies(gravity: [0.0, 0.0, -9.8], steps: 1)
+        _ = try humanoid.solveGroundContacts(baumgarte: 0.2, friction: 0.8)
+    }
+    penetrations = humanoid.readContactPenetrations()
+    if penetrations[shinIndex] > tolerance {
+        throw EnvProjectError.validationFailed(message: "Humanoid falling capsule did not land without penetration.")
+    }
+
     let standingHumanoid = try HumanoidMetalEnvironment(
         device: device,
         rootDir: rootDir,
@@ -2824,7 +3103,7 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
     let standingActions = Array(repeating: Float.zero, count: standingHumanoid.envCount * standingHumanoid.dofCount)
     var standingBatch = standingReset
     for _ in 0..<96 {
-        standingBatch = try standingHumanoid.stepStanding(actions: standingActions)
+        standingBatch = try standingHumanoid.stepStanding(actions: standingActions, solveSelfContact: false)
     }
     if !standingBatch.observations.allSatisfy({ $0.isFinite }) ||
         !standingBatch.rewards.allSatisfy({ $0.isFinite }) ||
@@ -2848,6 +3127,14 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
     if !standingPenetrations.allSatisfy({ $0.isFinite && $0 <= 1e-4 }) {
         throw EnvProjectError.validationFailed(message: "Humanoid standing environment left unresolved ground penetration.")
     }
+    let standingGroundImpulses = standingHumanoid.readGroundContactNormalImpulses()
+    let leftFootSupportImpulse = standingGroundImpulses[leftFootIndex]
+    let rightFootSupportImpulse = standingGroundImpulses[rightFootIndex]
+    if !(leftFootSupportImpulse.isFinite && rightFootSupportImpulse.isFinite && leftFootSupportImpulse + rightFootSupportImpulse > 0.0) {
+        throw EnvProjectError.validationFailed(
+            message: "Humanoid standing environment did not accumulate support impulse on foot box contacts."
+        )
+    }
 
     func runStandingReplay(
         actions: [Float],
@@ -2863,7 +3150,7 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
         )
         var batch = try replayHumanoid.reset()
         for _ in 0..<steps {
-            batch = try replayHumanoid.stepStanding(actions: actions, gravity: gravity)
+            batch = try replayHumanoid.stepStanding(actions: actions, gravity: gravity, solveSelfContact: false)
         }
         return HumanoidStandingReplaySnapshot(
             observations: batch.observations,
@@ -2903,7 +3190,7 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
     let stressActions = Array(repeating: Float.zero, count: standingStressHumanoid.envCount * standingStressHumanoid.dofCount)
     var stressBatch = standingStressHumanoid.readBatch()
     for _ in 0..<240 {
-        stressBatch = try standingStressHumanoid.stepStanding(actions: stressActions)
+        stressBatch = try standingStressHumanoid.stepStanding(actions: stressActions, solveSelfContact: false)
     }
     if !stressBatch.observations.allSatisfy({ $0.isFinite }) ||
         !stressBatch.rewards.allSatisfy({ $0.isFinite }) ||
@@ -2919,6 +3206,92 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
     }
     if !standingStressHumanoid.readContactPenetrations().allSatisfy({ $0.isFinite && $0 <= 1e-4 }) {
         throw EnvProjectError.validationFailed(message: "Humanoid long standing stress rollout left unresolved ground penetration.")
+    }
+
+    let selfContactStressHumanoid = try HumanoidMetalEnvironment(
+        device: device,
+        rootDir: rootDir,
+        envCount: 64,
+        specURL: specURL,
+        dt: 1.0 / 120.0
+    )
+    _ = try selfContactStressHumanoid.reset()
+    let selfContactStressActions = Array(repeating: Float.zero, count: selfContactStressHumanoid.envCount * selfContactStressHumanoid.dofCount)
+    var selfContactStressBatch = selfContactStressHumanoid.readBatch()
+    for _ in 0..<48 {
+        selfContactStressBatch = try selfContactStressHumanoid.stepStanding(
+            actions: selfContactStressActions,
+            contactIterations: 1
+        )
+    }
+    if !selfContactStressBatch.observations.allSatisfy({ $0.isFinite }) ||
+        !selfContactStressBatch.rewards.allSatisfy({ $0.isFinite }) ||
+        !selfContactStressHumanoid.readLinkPositions().allSatisfy({ $0.isFinite }) ||
+        !selfContactStressHumanoid.readLinkLinearVelocities().allSatisfy({ $0.isFinite }) ||
+        !selfContactStressHumanoid.readLinkAngularVelocities().allSatisfy({ $0.isFinite }) ||
+        !selfContactStressHumanoid.readSelfContactNormalImpulses().allSatisfy({ $0.isFinite }) ||
+        !selfContactStressHumanoid.readSolverDiagnostics().allSatisfy({ $0.isFinite }) {
+        throw EnvProjectError.validationFailed(message: "Humanoid full self-contact standing stress produced invalid state.")
+    }
+    if !selfContactStressHumanoid.readContactPenetrations().allSatisfy({ $0.isFinite && $0 <= 1e-4 }) {
+        throw EnvProjectError.validationFailed(message: "Humanoid full self-contact standing stress left unresolved ground penetration.")
+    }
+
+    let learnedStressHumanoid = try HumanoidMetalEnvironment(
+        device: device,
+        rootDir: rootDir,
+        envCount: 16,
+        specURL: specURL,
+        dt: 1.0 / 120.0
+    )
+    let learnedStressDriver = HumanoidStandingVectorEnvDriver(
+        environment: learnedStressHumanoid,
+        contactIterations: 1,
+        solveSelfContact: true
+    )
+    var learnedStressModel = makeDeterministicMLPActorCritic(
+        observationSpec: learnedStressDriver.observationSpec,
+        actionSpec: learnedStressDriver.actionSpec,
+        hiddenDim: 8,
+        weightScale: 0.002
+    )
+    let learnedStorage = try collectActorCriticRolloutStorage(
+        driver: learnedStressDriver,
+        policy: learnedStressModel,
+        config: PolicyRolloutConfig(
+            horizon: 8,
+            samplingMode: .deterministicMean,
+            samplingSeed: 0x5151_0011
+        )
+    )
+    let learnedEstimates = try computeGAE(
+        storage: learnedStorage,
+        config: GAEConfig(gamma: 0.98, lambda: 0.95)
+    )
+    let learnedBatch = try makePPOBatch(storage: learnedStorage, estimates: learnedEstimates)
+    var learnedAdamState: AdamState? = nil
+    let learnedStep = try learnedStressModel.applyOptimizerStep(
+        batch: learnedBatch,
+        observationSpec: learnedStressDriver.observationSpec,
+        actionSpec: learnedStressDriver.actionSpec,
+        ppoConfig: PPOConfig(clipEpsilon: 0.2, valueCoefficient: 0.5, entropyCoefficient: 0.001),
+        optimizer: .sgd(SGDConfig(learningRate: 1.0e-4)),
+        adamState: &learnedAdamState
+    )
+    if !learnedStorage.rewards.allSatisfy({ $0.isFinite }) ||
+        !learnedStorage.actions.allSatisfy({ $0.isFinite }) ||
+        !learnedStorage.observations.allSatisfy({ $0.isFinite }) ||
+        !learnedStorage.nextObservations.allSatisfy({ $0.isFinite }) ||
+        !learnedEstimates.advantages.allSatisfy({ $0.isFinite }) ||
+        !learnedEstimates.returns.allSatisfy({ $0.isFinite }) ||
+        !learnedStep.preLoss.totalLoss.isFinite ||
+        !learnedStep.postLoss.totalLoss.isFinite ||
+        !(learnedStep.postLoss.totalLoss < learnedStep.preLoss.totalLoss) ||
+        !(learnedStep.parameterDeltaL1 > 0.0) ||
+        !learnedStressHumanoid.readLinkPositions().allSatisfy({ $0.isFinite }) ||
+        !learnedStressHumanoid.readLinkLinearVelocities().allSatisfy({ $0.isFinite }) ||
+        !learnedStressHumanoid.readLinkAngularVelocities().allSatisfy({ $0.isFinite }) {
+        throw EnvProjectError.validationFailed(message: "Humanoid learned-control standing stress produced invalid rollout or optimizer state.")
     }
 
     let nonzeroStressHumanoid = try HumanoidMetalEnvironment(
@@ -2944,7 +3317,7 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
             nonzeroActions[base + leftHipOffset + 1] = 0.5 * actionValue
             nonzeroActions[base + rightHipOffset + 1] = -0.5 * actionValue
         }
-        nonzeroBatch = try nonzeroStressHumanoid.stepStanding(actions: nonzeroActions)
+        nonzeroBatch = try nonzeroStressHumanoid.stepStanding(actions: nonzeroActions, solveSelfContact: false)
     }
     let nonzeroDiagnostics = nonzeroStressHumanoid.readSolverDiagnostics()
     if !nonzeroBatch.observations.allSatisfy({ $0.isFinite }) ||
@@ -2961,6 +3334,229 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
     }
     if !nonzeroStressHumanoid.readContactPenetrations().allSatisfy({ $0.isFinite && $0 <= 1e-4 }) {
         throw EnvProjectError.validationFailed(message: "Humanoid nonzero-action chain/contact stress rollout left unresolved ground penetration.")
+    }
+
+    do {
+        let pelvisIndexRest = try linkIndex(named: "pelvis")
+        let restitutionHumanoid = try HumanoidMetalEnvironment(
+            device: device,
+            rootDir: rootDir,
+            envCount: 4,
+            specURL: specURL,
+            dt: 1.0 / 120.0
+        )
+        _ = try restitutionHumanoid.reset()
+        var restPositions = restitutionHumanoid.readLinkPositions()
+        let restRotations = restitutionHumanoid.readLinkRotations()
+        var restVelocities = Array(repeating: Float.zero, count: restitutionHumanoid.envCount * restitutionHumanoid.linkCount * 3)
+        for env in 0..<restitutionHumanoid.envCount {
+            let base = (env * restitutionHumanoid.linkCount + pelvisIndexRest) * 3
+            restPositions[base + 2] = 0.02
+            restVelocities[base + 2] = -3.0
+        }
+        try restitutionHumanoid.loadLinkStateForValidation(positions: restPositions, rotations: restRotations)
+        try restitutionHumanoid.loadLinkVelocitiesForValidation(
+            linear: restVelocities,
+            angular: Array(repeating: Float.zero, count: restitutionHumanoid.envCount * restitutionHumanoid.linkCount * 3)
+        )
+        _ = try restitutionHumanoid.solveGroundContacts(baumgarte: 0.2, friction: 0.0, restitution: 0.0)
+        let zeroRestitutionVelocity = restitutionHumanoid.readLinkLinearVelocities()[pelvisIndexRest * 3 + 2]
+        if abs(zeroRestitutionVelocity) > 1.0e-3 {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid contact solver with zero restitution did not zero out incoming normal velocity: got \(zeroRestitutionVelocity)."
+            )
+        }
+
+        try restitutionHumanoid.loadLinkStateForValidation(positions: restPositions, rotations: restRotations)
+        try restitutionHumanoid.loadLinkVelocitiesForValidation(
+            linear: restVelocities,
+            angular: Array(repeating: Float.zero, count: restitutionHumanoid.envCount * restitutionHumanoid.linkCount * 3)
+        )
+        _ = try restitutionHumanoid.solveGroundContacts(baumgarte: 0.2, friction: 0.0, restitution: 0.5)
+        let halfRestitutionVelocity = restitutionHumanoid.readLinkLinearVelocities()[pelvisIndexRest * 3 + 2]
+        if !(halfRestitutionVelocity > 0.5 && halfRestitutionVelocity < 2.5) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid contact solver restitution=0.5 did not produce expected upward bounce velocity: got \(halfRestitutionVelocity)."
+            )
+        }
+
+        try restitutionHumanoid.loadLinkStateForValidation(positions: restPositions, rotations: restRotations)
+        try restitutionHumanoid.loadLinkVelocitiesForValidation(
+            linear: restVelocities,
+            angular: Array(repeating: Float.zero, count: restitutionHumanoid.envCount * restitutionHumanoid.linkCount * 3)
+        )
+        _ = try restitutionHumanoid.solveGroundContacts(baumgarte: 0.2, friction: 0.0, restitution: 1.0)
+        let fullRestitutionVelocity = restitutionHumanoid.readLinkLinearVelocities()[pelvisIndexRest * 3 + 2]
+        if !(fullRestitutionVelocity > halfRestitutionVelocity * 1.5) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid contact solver restitution=1.0 did not produce a higher bounce than restitution=0.5: half \(halfRestitutionVelocity), full \(fullRestitutionVelocity)."
+            )
+        }
+
+        let groundNormalImpulses = restitutionHumanoid.readGroundContactNormalImpulses()
+        if !(groundNormalImpulses[pelvisIndexRest] > 0.0) {
+            throw EnvProjectError.validationFailed(message: "Humanoid contact solver did not record an accumulated ground normal impulse.")
+        }
+        _ = try restitutionHumanoid.reset()
+        if restitutionHumanoid.readGroundContactNormalImpulses().contains(where: { abs($0) > tolerance }) {
+            throw EnvProjectError.validationFailed(message: "Humanoid reset did not clear accumulated ground contact impulses.")
+        }
+    }
+
+    do {
+        let selfSpecURL = try writeSpecWithOnlyCollisionShapes(
+            filename: "humanoid_self_solver_repro.json",
+            shapes: [
+                "head": (type: "sphere", params: ["radius": 0.10]),
+                "lumbar": (type: "sphere", params: ["radius": 0.20]),
+            ]
+        )
+        let selfHumanoid = try HumanoidMetalEnvironment(
+            device: device,
+            rootDir: rootDir,
+            envCount: 4,
+            specURL: selfSpecURL,
+            dt: 1.0 / 120.0
+        )
+        _ = try selfHumanoid.reset()
+        let headIdx = try linkIndex(named: "head")
+        let lumbarIdx = try linkIndex(named: "lumbar")
+        var selfPositions = selfHumanoid.readLinkPositions()
+        let selfRotations = selfHumanoid.readLinkRotations()
+        for env in 0..<selfHumanoid.envCount {
+            let headBase = (env * selfHumanoid.linkCount + headIdx) * 3
+            let lumbarBase = (env * selfHumanoid.linkCount + lumbarIdx) * 3
+            selfPositions[headBase + 0] = 0.0
+            selfPositions[headBase + 1] = 0.0
+            selfPositions[headBase + 2] = 1.0
+            selfPositions[lumbarBase + 0] = 0.10
+            selfPositions[lumbarBase + 1] = 0.0
+            selfPositions[lumbarBase + 2] = 1.0
+        }
+        try selfHumanoid.loadLinkStateForValidation(positions: selfPositions, rotations: selfRotations)
+        var selfVelocities = Array(repeating: Float.zero, count: selfHumanoid.envCount * selfHumanoid.linkCount * 3)
+        for env in 0..<selfHumanoid.envCount {
+            let lumbarBase = (env * selfHumanoid.linkCount + lumbarIdx) * 3
+            selfVelocities[lumbarBase + 0] = -2.0
+        }
+        try selfHumanoid.loadLinkVelocitiesForValidation(
+            linear: selfVelocities,
+            angular: Array(repeating: Float.zero, count: selfHumanoid.envCount * selfHumanoid.linkCount * 3)
+        )
+        _ = try selfHumanoid.solveSelfContacts()
+        let solvedSelfVelocities = selfHumanoid.readLinkLinearVelocities()
+        let lumbarVelX = solvedSelfVelocities[lumbarIdx * 3 + 0]
+        let headVelX = solvedSelfVelocities[headIdx * 3 + 0]
+        if !(lumbarVelX > -2.0) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid self-contact solver did not push the lumbar sphere away from the head: got \(lumbarVelX)."
+            )
+        }
+        if !(headVelX < 0.0) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid self-contact solver did not transfer momentum to head: got \(headVelX)."
+            )
+        }
+        let selfImpulses = selfHumanoid.readSelfContactNormalImpulses()
+        if !selfImpulses.contains(where: { $0 > 0.0 }) {
+            throw EnvProjectError.validationFailed(message: "Humanoid self-contact solver did not record an accumulated impulse.")
+        }
+        _ = try selfHumanoid.reset()
+        if selfHumanoid.readSelfContactNormalImpulses().contains(where: { abs($0) > tolerance }) {
+            throw EnvProjectError.validationFailed(message: "Humanoid reset did not clear accumulated self-contact impulses.")
+        }
+    }
+
+    do {
+        let standingSelfSpecURL = try writeSpecWithOnlyCollisionShapes(
+            filename: "humanoid_step_standing_self_contact_repro.json",
+            shapes: [
+                "head": (type: "sphere", params: ["radius": 0.50]),
+                "lumbar": (type: "sphere", params: ["radius": 0.50]),
+            ]
+        )
+        let standingSelfHumanoid = try HumanoidMetalEnvironment(
+            device: device,
+            rootDir: rootDir,
+            envCount: 4,
+            specURL: standingSelfSpecURL,
+            dt: 1.0 / 120.0
+        )
+        guard let standingSelfPair = standingSelfHumanoid.selfCollisionPairs.firstIndex(where: { $0 == lumbarIndex && $1 == headIndex }) else {
+            throw EnvProjectError.validationFailed(message: "Humanoid standing self-contact repro pair was not generated.")
+        }
+        _ = try standingSelfHumanoid.reset()
+        try standingSelfHumanoid.detectSelfContacts()
+        let initialStandingSelfPenetration = standingSelfHumanoid.readSelfContactPenetrations()[standingSelfPair]
+        if !(initialStandingSelfPenetration > 0.05) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid standing self-contact repro did not start with overlap: got \(initialStandingSelfPenetration)."
+            )
+        }
+        let standingSelfActions = Array(repeating: Float.zero, count: standingSelfHumanoid.envCount * standingSelfHumanoid.dofCount)
+        _ = try standingSelfHumanoid.stepStanding(
+            actions: standingSelfActions,
+            gravity: [0.0, 0.0, 0.0],
+            contactIterations: 1,
+            solveSelfContact: true
+        )
+        try standingSelfHumanoid.detectSelfContacts()
+        let solvedStandingSelfPenetration = standingSelfHumanoid.readSelfContactPenetrations()[standingSelfPair]
+        if !(solvedStandingSelfPenetration < initialStandingSelfPenetration * 0.5) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid stepStanding self-contact pass did not reduce overlap: before \(initialStandingSelfPenetration), after \(solvedStandingSelfPenetration)."
+            )
+        }
+    }
+
+    do {
+        let coneHumanoid = try HumanoidMetalEnvironment(
+            device: device,
+            rootDir: rootDir,
+            envCount: 4,
+            specURL: specURL,
+            dt: 1.0 / 120.0
+        )
+        _ = try coneHumanoid.reset()
+        let pelvisIdx = try linkIndex(named: "pelvis")
+        let leftThighIdxCone = try linkIndex(named: "left_thigh")
+        let conePositions = coneHumanoid.readLinkPositions()
+        var coneRotations = coneHumanoid.readLinkRotations()
+        let conePerturbation = quatAxisAngle(axis: [0.0, 1.0, 0.0], angle: 2.5)
+        for env in 0..<coneHumanoid.envCount {
+            let childBase = (env * coneHumanoid.linkCount + leftThighIdxCone) * 4
+            let current = Array(coneRotations[childBase..<(childBase + 4)])
+            let broken = quatMultiply(conePerturbation, current)
+            for axis in 0..<4 {
+                coneRotations[childBase + axis] = broken[axis]
+            }
+        }
+        try coneHumanoid.loadLinkStateForValidation(positions: conePositions, rotations: coneRotations)
+        let coneBrokenAngle = relativeRotationAngle(
+            rotations: coneHumanoid.readLinkRotations(),
+            parent: pelvisIdx,
+            child: leftThighIdxCone
+        )
+        if !(coneBrokenAngle > 1.9) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid swing-twist cone repro did not seed a large swing angle: got \(coneBrokenAngle)."
+            )
+        }
+        _ = try coneHumanoid.solveJointAnchorConstraints(iterations: 8, baumgarte: 0.2)
+        let coneSolvedAngle = relativeRotationAngle(
+            rotations: coneHumanoid.readLinkRotations(),
+            parent: pelvisIdx,
+            child: leftThighIdxCone
+        )
+        if !(coneSolvedAngle < coneBrokenAngle * 0.95) {
+            throw EnvProjectError.validationFailed(
+                message: "Humanoid swing-twist cone constraint did not pull spherical hip back toward limit: before \(coneBrokenAngle), after \(coneSolvedAngle)."
+            )
+        }
+        let coneAngularImpulses = coneHumanoid.readJointAngularImpulses()
+        if !coneAngularImpulses.contains(where: { abs($0) > tolerance }) {
+            throw EnvProjectError.validationFailed(message: "Humanoid swing-twist cone did not produce an angular corrective impulse.")
+        }
     }
 
     _ = try humanoid.reset()
@@ -2997,17 +3593,96 @@ func validateHumanoidMetalEnvironment(device: MTLDevice, rootDir: String, tolera
 
     let replayURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("metal-rl-humanoid-smoke/humanoid_replay.html")
+    let replayFrame = try humanoid.makeReplayFrame(envIndex: 0)
     try writeHumanoidHTMLReplay(
         frames: [
-            try humanoid.makeReplayFrame(envIndex: 0),
+            replayFrame,
+            replayFrame,
         ],
         linkNames: humanoid.linkNames,
         parentLinkIndices: humanoid.parentLinkIndices,
+        collisionShapes: humanoid.readCollisionConstants(),
         to: replayURL,
         title: "Humanoid Smoke Replay"
     )
     if !FileManager.default.fileExists(atPath: replayURL.path) {
         throw EnvProjectError.validationFailed(message: "Humanoid HTML replay was not written.")
+    }
+    let replayJSONURL = replayURL.deletingPathExtension().appendingPathExtension("json")
+    if !FileManager.default.fileExists(atPath: replayJSONURL.path) {
+        throw EnvProjectError.validationFailed(message: "Humanoid replay JSON was not written.")
+    }
+    let replayHTML = try String(contentsOf: replayURL, encoding: .utf8)
+    if !replayHTML.contains("drawCollisionShapes") ||
+        !replayHTML.contains("drawContacts") ||
+        !replayHTML.contains("computeViewBounds") {
+        throw EnvProjectError.validationFailed(message: "Humanoid HTML replay did not include camera/collision/contact rendering code.")
+    }
+    let replayJSONData = try Data(contentsOf: replayJSONURL)
+    guard let replayJSONObject = try JSONSerialization.jsonObject(with: replayJSONData) as? [String: Any],
+          let replayFrames = replayJSONObject["frames"] as? [[String: Any]],
+          let replayShapes = replayJSONObject["collisionShapes"] as? [[String: Any]] else {
+        throw EnvProjectError.validationFailed(message: "Humanoid replay JSON did not contain frames and collision shapes.")
+    }
+    if replayFrames.count != 2 || replayShapes.count != humanoid.linkCount {
+        throw EnvProjectError.validationFailed(message: "Humanoid replay JSON did not include the expected frame/shape counts.")
+    }
+    if replayFrames.contains(where: { $0["cp"] == nil || $0["cn"] == nil || $0["pen"] == nil }) {
+        throw EnvProjectError.validationFailed(message: "Humanoid replay JSON did not include contact buffers.")
+    }
+    try expectValidationFailure("humanoid replay empty frames") {
+        try writeHumanoidHTMLReplay(
+            frames: [],
+            linkNames: humanoid.linkNames,
+            parentLinkIndices: humanoid.parentLinkIndices,
+            collisionShapes: humanoid.readCollisionConstants(),
+            to: replayURL,
+            title: "Humanoid Bad Replay"
+        )
+    }
+    var malformedPositions = replayFrame.linkPositions
+    malformedPositions.removeLast()
+    let malformedFrame = HumanoidReplayFrame(
+        linkPositions: malformedPositions,
+        jointPositions: replayFrame.jointPositions,
+        contactPoints: replayFrame.contactPoints,
+        contactNormals: replayFrame.contactNormals,
+        contactPenetrations: replayFrame.contactPenetrations,
+        reward: replayFrame.reward,
+        done: replayFrame.done,
+        resetCount: replayFrame.resetCount
+    )
+    try expectValidationFailure("humanoid replay malformed frame") {
+        try writeHumanoidHTMLReplay(
+            frames: [malformedFrame],
+            linkNames: humanoid.linkNames,
+            parentLinkIndices: humanoid.parentLinkIndices,
+            collisionShapes: humanoid.readCollisionConstants(),
+            to: replayURL,
+            title: "Humanoid Bad Replay"
+        )
+    }
+    var nonFinitePositions = replayFrame.linkPositions
+    nonFinitePositions[0] = .nan
+    let nonFiniteFrame = HumanoidReplayFrame(
+        linkPositions: nonFinitePositions,
+        jointPositions: replayFrame.jointPositions,
+        contactPoints: replayFrame.contactPoints,
+        contactNormals: replayFrame.contactNormals,
+        contactPenetrations: replayFrame.contactPenetrations,
+        reward: replayFrame.reward,
+        done: replayFrame.done,
+        resetCount: replayFrame.resetCount
+    )
+    try expectValidationFailure("humanoid replay non-finite frame") {
+        try writeHumanoidHTMLReplay(
+            frames: [nonFiniteFrame],
+            linkNames: humanoid.linkNames,
+            parentLinkIndices: humanoid.parentLinkIndices,
+            collisionShapes: humanoid.readCollisionConstants(),
+            to: replayURL,
+            title: "Humanoid Bad Replay"
+        )
     }
 }
 
@@ -3837,6 +4512,7 @@ func runValidationHarness() throws {
     print("alternate gpu mlp policy changed actions")
     print("actor-critic storage replay matched exactly")
     print("stochastic gaussian actor-critic rollout replay and cpu/gpu parity matched")
+    print("humanoid schema_version mismatch rejected with expected-version context")
     print("humanoid gpu rigid-body state, free-body integration, joint anchor constraints, motors/limits, ground/self contacts, contact solver, standing env, FK, and replay passed")
     print("gae synthetic case matched expected values")
     print("cpu and gpu gae outputs matched")
