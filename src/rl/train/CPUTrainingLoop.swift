@@ -3,6 +3,8 @@ import Foundation
 struct CPUTrainingLoopConfig {
     let iterations: Int
     let rolloutHorizon: Int
+    let policySamplingMode: PolicySamplingMode
+    let policySamplingSeed: UInt32
     let epochsPerIteration: Int
     let miniBatchSize: Int
     let resetSeed: UInt32
@@ -10,6 +12,32 @@ struct CPUTrainingLoopConfig {
     let gaeConfig: GAEConfig
     let ppoConfig: PPOConfig
     let optimizer: CPUOptimizerConfig
+
+    init(
+        iterations: Int,
+        rolloutHorizon: Int,
+        policySamplingMode: PolicySamplingMode = .deterministicMean,
+        policySamplingSeed: UInt32 = 0xC0FF_EE11,
+        epochsPerIteration: Int,
+        miniBatchSize: Int,
+        resetSeed: UInt32,
+        shuffleSeed: UInt32,
+        gaeConfig: GAEConfig,
+        ppoConfig: PPOConfig,
+        optimizer: CPUOptimizerConfig
+    ) {
+        self.iterations = iterations
+        self.rolloutHorizon = rolloutHorizon
+        self.policySamplingMode = policySamplingMode
+        self.policySamplingSeed = policySamplingSeed
+        self.epochsPerIteration = epochsPerIteration
+        self.miniBatchSize = miniBatchSize
+        self.resetSeed = resetSeed
+        self.shuffleSeed = shuffleSeed
+        self.gaeConfig = gaeConfig
+        self.ppoConfig = ppoConfig
+        self.optimizer = optimizer
+    }
 }
 
 struct CPUTrainingIterationSummary {
@@ -34,10 +62,22 @@ struct CPUTrainingRunSummary {
     }
 }
 
+struct TrainingProgressSnapshot {
+    let iteration: Int
+    let totalIterations: Int
+    let elapsedSeconds: TimeInterval
+    let etaSeconds: TimeInterval
+    let completedEnvSteps: Int
+    let totalEnvSteps: Int
+    let envStepsPerSecond: Double
+    let summary: CPUTrainingIterationSummary
+}
+
 func runCPUTrainingLoop(
     driver: CartPoleVectorEnvDriver,
     model: inout TrainableMLPActorCritic,
-    config: CPUTrainingLoopConfig
+    config: CPUTrainingLoopConfig,
+    progressHandler: ((TrainingProgressSnapshot) -> Void)? = nil
 ) throws -> CPUTrainingRunSummary {
     if config.iterations <= 0 {
         throw EnvProjectError.validationFailed(message: "CPU training loop requires at least one iteration.")
@@ -53,6 +93,7 @@ func runCPUTrainingLoop(
     summaries.reserveCapacity(config.iterations)
     var totalParameterDeltaL1: Float = 0.0
     var adamState: AdamState? = nil
+    let startTime = Date()
 
     for iteration in 0..<config.iterations {
         driver.setResetSeed(config.resetSeed &+ UInt32(iteration))
@@ -60,7 +101,11 @@ func runCPUTrainingLoop(
         let storage = try collectActorCriticRolloutStorage(
             driver: driver,
             policy: model,
-            config: PolicyRolloutConfig(horizon: config.rolloutHorizon)
+            config: PolicyRolloutConfig(
+                horizon: config.rolloutHorizon,
+                samplingMode: config.policySamplingMode,
+                samplingSeed: config.policySamplingSeed &+ UInt32(iteration)
+            )
         )
         let estimates = try computeGAE(storage: storage, config: config.gaeConfig)
         let batch = try makePPOBatch(storage: storage, estimates: estimates)
@@ -102,20 +147,63 @@ func runCPUTrainingLoop(
             }
         }
 
-        summaries.append(
-            CPUTrainingIterationSummary(
-                iteration: iteration,
-                meanReward: meanReward,
-                doneCount: doneCount,
-                preLoss: initialLoss,
-                postLoss: postLoss,
-                parameterDeltaL1: iterationDelta
-            )
+        let iterationSummary = CPUTrainingIterationSummary(
+            iteration: iteration,
+            meanReward: meanReward,
+            doneCount: doneCount,
+            preLoss: initialLoss,
+            postLoss: postLoss,
+            parameterDeltaL1: iterationDelta
         )
+        summaries.append(iterationSummary)
         totalParameterDeltaL1 += iterationDelta
+        emitTrainingProgress(
+            progressHandler,
+            summary: iterationSummary,
+            config: config,
+            envCount: driver.envCount,
+            elapsedSeconds: Date().timeIntervalSince(startTime)
+        )
     }
 
     return CPUTrainingRunSummary(iterations: summaries, totalParameterDeltaL1: totalParameterDeltaL1)
+}
+
+func emitTrainingProgress(
+    _ progressHandler: ((TrainingProgressSnapshot) -> Void)?,
+    summary: CPUTrainingIterationSummary,
+    config: CPUTrainingLoopConfig,
+    envCount: Int,
+    elapsedSeconds: TimeInterval
+) {
+    guard let progressHandler else {
+        return
+    }
+
+    let completedIterations = summary.iteration + 1
+    let stepsPerIteration = config.rolloutHorizon * envCount
+    let completedEnvSteps = completedIterations * stepsPerIteration
+    let totalEnvSteps = config.iterations * stepsPerIteration
+    let envStepsPerSecond = elapsedSeconds > 0
+        ? Double(completedEnvSteps) / elapsedSeconds
+        : 0.0
+    let remainingEnvSteps = max(0, totalEnvSteps - completedEnvSteps)
+    let etaSeconds = envStepsPerSecond > 0
+        ? Double(remainingEnvSteps) / envStepsPerSecond
+        : 0.0
+
+    progressHandler(
+        TrainingProgressSnapshot(
+            iteration: summary.iteration,
+            totalIterations: config.iterations,
+            elapsedSeconds: elapsedSeconds,
+            etaSeconds: etaSeconds,
+            completedEnvSteps: completedEnvSteps,
+            totalEnvSteps: totalEnvSteps,
+            envStepsPerSecond: envStepsPerSecond,
+            summary: summary
+        )
+    )
 }
 
 func makeMiniBatch(from batch: PPOBatch, indices: [Int]) throws -> PPOBatch {

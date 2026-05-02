@@ -250,14 +250,41 @@ func collectActorCriticRolloutStorage(
     values.reserveCapacity(horizon * envCount)
     logProbs.reserveCapacity(horizon * envCount)
 
-    for _ in 0..<horizon {
-        let evaluation = try policy.evaluateGaussian(
-            for: currentBatch.observations,
-            taking: nil,
-            envCount: envCount,
-            observationSpec: driver.observationSpec,
-            actionSpec: driver.actionSpec
-        )
+    for stepIndex in 0..<horizon {
+        let evaluation: GaussianPolicyOutputs
+        switch config.samplingMode {
+        case .deterministicMean:
+            evaluation = try policy.evaluateGaussian(
+                for: currentBatch.observations,
+                taking: nil,
+                envCount: envCount,
+                observationSpec: driver.observationSpec,
+                actionSpec: driver.actionSpec
+            )
+        case .stochasticGaussian:
+            let meanEvaluation = try policy.evaluateGaussian(
+                for: currentBatch.observations,
+                taking: nil,
+                envCount: envCount,
+                observationSpec: driver.observationSpec,
+                actionSpec: driver.actionSpec
+            )
+            let sampledActions = try sampleGaussianPolicyActions(
+                actionMeans: meanEvaluation.actionMeans,
+                logStd: meanEvaluation.logStd,
+                actionSpec: driver.actionSpec,
+                envCount: envCount,
+                stepIndex: stepIndex,
+                samplingSeed: config.samplingSeed
+            )
+            evaluation = try policy.evaluateGaussian(
+                for: currentBatch.observations,
+                taking: sampledActions,
+                envCount: envCount,
+                observationSpec: driver.observationSpec,
+                actionSpec: driver.actionSpec
+            )
+        }
 
         let steppedBatch = try driver.step(actions: evaluation.actions)
         let postResetBatch = try driver.resetDone()

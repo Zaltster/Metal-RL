@@ -7,7 +7,8 @@ func runPersistentMetalTrainingLoop(
     driver: CartPoleVectorEnvDriver,
     model: inout TrainableMLPActorCritic,
     gpuPolicy: MetalMLPPolicy,
-    config: CPUTrainingLoopConfig
+    config: CPUTrainingLoopConfig,
+    progressHandler: ((TrainingProgressSnapshot) -> Void)? = nil
 ) throws -> CPUTrainingRunSummary {
     if config.iterations <= 0 {
         throw EnvProjectError.validationFailed(message: "Persistent Metal training loop requires at least one iteration.")
@@ -29,6 +30,7 @@ func runPersistentMetalTrainingLoop(
     var summaries: [CPUTrainingIterationSummary] = []
     summaries.reserveCapacity(config.iterations)
     var totalParameterDeltaL1: Float = 0.0
+    let startTime = Date()
 
     for iteration in 0..<config.iterations {
         try gpuPolicy.load(from: metalModel)
@@ -37,7 +39,11 @@ func runPersistentMetalTrainingLoop(
         let storage = try collectActorCriticRolloutStorage(
             driver: driver,
             policy: gpuPolicy,
-            config: PolicyRolloutConfig(horizon: config.rolloutHorizon)
+            config: PolicyRolloutConfig(
+                horizon: config.rolloutHorizon,
+                samplingMode: config.policySamplingMode,
+                samplingSeed: config.policySamplingSeed &+ UInt32(iteration)
+            )
         )
         let estimates = try computeGAE(storage: storage, config: config.gaeConfig)
         let batch = try makePPOBatch(storage: storage, estimates: estimates)
@@ -91,17 +97,23 @@ func runPersistentMetalTrainingLoop(
             }
         }
 
-        summaries.append(
-            CPUTrainingIterationSummary(
-                iteration: iteration,
-                meanReward: meanReward,
-                doneCount: doneCount,
-                preLoss: initialLoss,
-                postLoss: postLoss,
-                parameterDeltaL1: iterationDelta
-            )
+        let iterationSummary = CPUTrainingIterationSummary(
+            iteration: iteration,
+            meanReward: meanReward,
+            doneCount: doneCount,
+            preLoss: initialLoss,
+            postLoss: postLoss,
+            parameterDeltaL1: iterationDelta
         )
+        summaries.append(iterationSummary)
         totalParameterDeltaL1 += iterationDelta
+        emitTrainingProgress(
+            progressHandler,
+            summary: iterationSummary,
+            config: config,
+            envCount: driver.envCount,
+            elapsedSeconds: Date().timeIntervalSince(startTime)
+        )
     }
 
     model = metalModel.readModel()

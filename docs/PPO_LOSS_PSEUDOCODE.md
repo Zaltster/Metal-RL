@@ -102,11 +102,11 @@ totalLoss = policyLoss + valueCoef * valueLoss - entropyCoef * entropyBonus
 3. CPU and GPU fixed MLP policies produce matching PPO losses on matching stored rollouts.
 4. Alternate fixed policies change the PPO loss.
 
-## Important Simplification In This Repository Right Now
+## Current Policy Distribution Scope
 
-At this stage, the fixed MLP policy uses:
+The fixed MLP actor-critic policy uses:
 
-- deterministic action means as the stored actions
-- a fixed diagonal Gaussian log-std used only for log-probability math
+- deterministic action means or seeded stochastic Gaussian samples as stored rollout actions
+- a fixed diagonal Gaussian log-std for log-probability and entropy math
 
-That is enough to validate PPO loss construction, but it is not yet a learned stochastic policy implementation.
+The log-std is not learned yet. Stochastic samples are clamped to environment action bounds before stepping, and PPO stores the Gaussian log-probability of the executed action.

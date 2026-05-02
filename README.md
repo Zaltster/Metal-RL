@@ -44,15 +44,21 @@ What is implemented:
 - tiny persistent-GPU optimizer training loop with CPU SGD and CPU Adam loop parity
 - direct Metal-buffer sync from persistent trainable parameters into GPU rollout policy inference
 - standalone CartPole training demo using persistent GPU Adam by default, with hybrid CPU Adam still selectable
+- live training-demo progress logs with elapsed time, ETA, env steps/sec, reward, loss, and update size
+- post-training CartPole replay export as a self-contained HTML/Canvas animation
+- explicit policy sampling mode plumbing for `deterministic-mean` and seeded `stochastic-gaussian`
+- stochastic Gaussian action sampling for actor-critic rollout exploration, with CPU/GPU storage parity validation
 - deterministic repeated CPU-side PPO training loop over the GPU cartpole environment with seeded minibatch shuffling and Adam
 - deterministic hybrid training loop with GPU rollouts and CPU Adam updates
 - JSON checkpoint save/load for the trainable MLP actor-critic, with restored CPU/GPU forward parity validation
 - JSON checkpoint/restart validation for persistent GPU trainable parameters plus Adam optimizer state
 - host-side rollout storage with explicit indexing helpers
+- locked humanoid v1 robot spec and synthetic baseline JSON
+- GPU-first humanoid elastic-joint environment with JSON loading, rigid-body state buffers, Metal reset/step/FK/output kernels, and HTML replay export
 
 What is not implemented yet:
 
-- policy sampling with a learned stochastic policy
+- learned policy log-std
 - full GPU-side backpropagation beyond the current one-hidden-layer MLP PPO path
 - production resume flow using persistent GPU optimizer-state checkpoints
 - fully device-resident checkpointing without host serialization
@@ -86,6 +92,7 @@ What is not implemented yet:
   Deterministic validation harness used to verify the stack end to end.
 - `docs/`
   Architecture and module notes.
+  Start with `docs/README.md`. See `docs/HUMANOID_RIGID_BODY_PHYSICS_PLAN.md` for the GPU rigid-body/contact physics and renderer roadmap.
 
 ## Validation
 
@@ -121,6 +128,8 @@ The current harness checks:
 - deterministic CPU training-loop replay
 - deterministic hybrid GPU-rollout training-loop replay
 - trainable actor-critic checkpoint round-trip and restored GPU policy parity
+- seeded stochastic Gaussian actor-critic rollout replay and CPU/GPU parity
+- humanoid GPU rigid-body state, elastic-joint step, forward kinematics, and replay export
 - rollout storage replay
 
 ## Run
@@ -143,6 +152,8 @@ Expected output includes lines like:
 - `persistent gpu sgd training loop matched cpu sgd training loop`
 - `persistent gpu adam training loop matched cpu adam training loop`
 - `persistent gpu trainable buffers synced directly into rollout policy buffers`
+- `stochastic gaussian actor-critic rollout replay and cpu/gpu parity matched`
+- `humanoid gpu rigid-body state, free-body integration, joint anchor constraints, motors/limits, ground/self contacts, contact solver, standing env, FK, and replay passed`
 - `rollout storage replay matched exactly`
 
 Run the standalone CartPole trainer:
@@ -151,10 +162,71 @@ Run the standalone CartPole trainer:
 ./scripts/train_cartpole_demo.sh
 ```
 
+The demo prints progress during training:
+
+```text
+progress iter=1/200 elapsed=00:01 eta=03:12 envSteps=32768/6553600 stepsPerSec=345000 meanReward=...
+```
+
 The default backend is `persistent-gpu-adam`. The previous hybrid path remains available:
 
 ```bash
 TRAIN_BACKEND=hybrid-cpu-adam ./scripts/train_cartpole_demo.sh
+```
+
+The rollout sampling mode is explicit and defaults to deterministic action means:
+
+```bash
+TRAIN_POLICY_SAMPLING=deterministic-mean ./scripts/train_cartpole_demo.sh
+```
+
+Stochastic Gaussian exploration is also available. It samples from the fixed diagonal Gaussian policy, clamps actions to the environment action bounds, and stores the executed action log-probability for PPO:
+
+```bash
+TRAIN_POLICY_SAMPLING=stochastic-gaussian ./scripts/train_cartpole_demo.sh
+TRAIN_POLICY_SEED=0xC0FFEE11 TRAIN_POLICY_SAMPLING=stochastic-gaussian ./scripts/train_cartpole_demo.sh
+```
+
+Progress logs print every iteration by default. Change or disable that with `TRAIN_LOG_EVERY`:
+
+```bash
+TRAIN_LOG_EVERY=10 ./scripts/train_cartpole_demo.sh
+TRAIN_LOG_EVERY=0 ./scripts/train_cartpole_demo.sh
+```
+
+The demo also writes a post-training replay animation by default:
+
+```text
+replayPath: /Users/smile/pufer/Environment/train-cartpole-demo/.build/cartpole_replay.html
+```
+
+Open that HTML file in a browser to see the cart and pole move. Replay controls:
+
+```bash
+TRAIN_REPLAY_HORIZON=480 ./scripts/train_cartpole_demo.sh
+TRAIN_REPLAY_ENV=3 ./scripts/train_cartpole_demo.sh
+TRAIN_REPLAY_PATH=/tmp/cartpole_replay.html ./scripts/train_cartpole_demo.sh
+TRAIN_REPLAY_HORIZON=0 ./scripts/train_cartpole_demo.sh
+```
+
+Run the GPU humanoid elastic-joint demo:
+
+```bash
+./scripts/run_humanoid_demo.sh
+```
+
+It loads `docs/humanoid_v1_baseline.json`, runs the batched Metal humanoid environment, and writes:
+
+```text
+humanoid-demo/.build/humanoid_replay.html
+```
+
+Useful controls:
+
+```bash
+HUMANOID_ENV_COUNT=4096 ./scripts/run_humanoid_demo.sh
+HUMANOID_STEPS=600 ./scripts/run_humanoid_demo.sh
+HUMANOID_REPLAY_ENV=3 ./scripts/run_humanoid_demo.sh
 ```
 
 ## Design Principles
@@ -169,9 +241,9 @@ TRAIN_BACKEND=hybrid-cpu-adam ./scripts/train_cartpole_demo.sh
 The next major phase is turning the persistent-GPU optimizer demo into a more complete training product:
 
 1. add production run directories, metrics logs, best/latest checkpoints, and resume
-2. reduce CPU readback in the persistent GPU training summaries
-3. run longer learning-quality tests and define CartPole solve criteria
-4. move more rollout postprocessing and loss bookkeeping onto Metal
+2. add eval mode with fixed checkpoint, mean return, mean episode length, and reset counts
+3. reduce CPU readback in the persistent GPU training summaries
+4. run throughput scaling tests and longer learning-quality tests with CartPole solve criteria
 
 ## Notes
 

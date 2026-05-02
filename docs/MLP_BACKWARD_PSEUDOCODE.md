@@ -7,6 +7,7 @@ This document describes the first training-gradient path for the repository:
 - hand-derived gradients
 - simple SGD and Adam
 - host-side checkpoint round-trip for trained weights and persistent GPU Adam state
+- explicit deterministic-mean and seeded stochastic-Gaussian rollout sampling modes
 - no custom autodiff engine yet
 
 The goal is to prove that the current PPO math can drive parameter updates, then reproduce the same gradient and optimizer math in Metal before expanding the GPU-native training path.
@@ -24,6 +25,7 @@ value = Wv * h + bv
 ```
 
 The policy uses a fixed diagonal Gaussian log-std, so only the mean is trainable in this step.
+Actor-critic rollouts can either use deterministic mean actions or seeded stochastic Gaussian samples. Stochastic rollout actions are clamped to the environment action bounds before stepping, and the PPO batch stores the Gaussian log-probability of the executed action.
 
 ## PPO Terms Used
 
@@ -162,14 +164,15 @@ The current single-step helper computes pre/post PPO loss around the Metal SGD u
 7. Compare repeated CPU Adam against repeated persistent-buffer Metal Adam.
 8. Compare tiny CPU SGD and Adam training loops against persistent-GPU optimizer training loops.
 9. Save and restore persistent Metal parameters plus Adam state, then compare the next Adam step against the uninterrupted path.
-10. Copy persistent trainable GPU buffers directly into rollout policy GPU buffers before rollout.
-11. Compute loss before the update.
-12. Apply one or a few optimizer steps.
-13. Verify:
+10. Require rollout code to declare `deterministic-mean` or `stochastic-gaussian` sampling, and validate seeded stochastic replay plus CPU/GPU rollout-storage parity.
+11. Copy persistent trainable GPU buffers directly into rollout policy GPU buffers before rollout.
+12. Compute loss before the update.
+13. Apply one or a few optimizer steps.
+14. Verify:
    - parameters changed
    - forward outputs changed
    - loss decreased on the synthetic batch
-14. Repeat on the real stored cartpole rollout batch.
+15. Repeat on the real stored cartpole rollout batch.
 
 ## What This Does Not Do Yet
 
@@ -177,5 +180,6 @@ This step does not include:
 
 - gradient clipping
 - value clipping
+- learned log-std
 - production resume flow around persistent GPU optimizer-state checkpoints
 - a general autodiff engine

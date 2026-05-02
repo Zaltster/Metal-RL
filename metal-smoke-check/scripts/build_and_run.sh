@@ -15,8 +15,13 @@ swiftc \
   "$ROOT_DIR/src/envs/common/VectorEnv.swift" \
   "$ROOT_DIR/src/envs/cartpole/CartPoleTypes.swift" \
   "$ROOT_DIR/src/envs/cartpole/CartPoleReference.swift" \
+  "$ROOT_DIR/src/envs/cartpole/CartPoleHTMLReplay.swift" \
   "$ROOT_DIR/src/envs/cartpole/CartPoleMetalEnvironment.swift" \
   "$ROOT_DIR/src/envs/cartpole/CartPoleVectorEnvDriver.swift" \
+  "$ROOT_DIR/src/envs/humanoid/HumanoidTypes.swift" \
+  "$ROOT_DIR/src/envs/humanoid/HumanoidRobotLoader.swift" \
+  "$ROOT_DIR/src/envs/humanoid/HumanoidMetalEnvironment.swift" \
+  "$ROOT_DIR/src/envs/humanoid/HumanoidHTMLReplay.swift" \
   "$ROOT_DIR/src/rl/random/RandomPolicyRollout.swift" \
   "$ROOT_DIR/src/rl/policy/LinearPolicy.swift" \
   "$ROOT_DIR/src/rl/policy/MLPPolicy.swift" \

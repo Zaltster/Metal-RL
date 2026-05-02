@@ -1,0 +1,2221 @@
+{
+  "schema_version": "1.0",
+  "name": "humanoid_v1",
+  "units": "SI",
+  "links": [
+    {
+      "name": "pelvis",
+      "inertial": {
+        "mass": 9.0,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          0.0408,
+          0.05399999999999999,
+          0.0732,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.12,
+              0.1,
+              0.06
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.12,
+              0.1,
+              0.06
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "lumbar",
+      "inertial": {
+        "mass": 6.0,
+        "com": [
+          0.0,
+          0.0,
+          0.06
+        ],
+        "inertia": [
+          0.034515789473684215,
+          0.034515789473684215,
+          0.026842105263157896,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.1,
+            "half_length": 0.06
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.06
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.1,
+            "half_length": 0.06
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.06
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "chest",
+      "inertial": {
+        "mass": 12.0,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          0.106,
+          0.178,
+          0.18719999999999998,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.18,
+              0.12,
+              0.11
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.18,
+              0.12,
+              0.11
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "head",
+      "inertial": {
+        "mass": 5.0,
+        "com": [
+          0.0,
+          0.0,
+          0.09
+        ],
+        "inertia": [
+          0.03685499999999999,
+          0.03685499999999999,
+          0.01863,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.09,
+            "half_length": 0.09
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.09
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.09,
+            "half_length": 0.09
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.09
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "left_upper_arm",
+      "inertial": {
+        "mass": 2.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.15
+        ],
+        "inertia": [
+          0.02730113636363636,
+          0.02730113636363636,
+          0.0030113636363636367,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.15
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.15
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.15
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.15
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "left_lower_arm",
+      "inertial": {
+        "mass": 1.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.135
+        ],
+        "inertia": [
+          0.012778067010309278,
+          0.012778067010309278,
+          0.0011604123711340206,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.135
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.135
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.135
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.135
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "left_wrist_twist",
+      "inertial": {
+        "mass": 0.05,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          1e-05,
+          1e-05,
+          1e-05,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [],
+      "collision": []
+    },
+    {
+      "name": "left_hand",
+      "inertial": {
+        "mass": 0.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.05
+        ],
+        "inertia": [
+          0.0009482608695652174,
+          0.0009482608695652174,
+          0.0003721739130434783,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.05
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.05
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.05
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.05
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "right_upper_arm",
+      "inertial": {
+        "mass": 2.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.15
+        ],
+        "inertia": [
+          0.02730113636363636,
+          0.02730113636363636,
+          0.0030113636363636367,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.15
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.15
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.15
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.15
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "right_lower_arm",
+      "inertial": {
+        "mass": 1.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.135
+        ],
+        "inertia": [
+          0.012778067010309278,
+          0.012778067010309278,
+          0.0011604123711340206,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.135
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.135
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.135
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.135
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "right_wrist_twist",
+      "inertial": {
+        "mass": 0.05,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          1e-05,
+          1e-05,
+          1e-05,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [],
+      "collision": []
+    },
+    {
+      "name": "right_hand",
+      "inertial": {
+        "mass": 0.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.05
+        ],
+        "inertia": [
+          0.0009482608695652174,
+          0.0009482608695652174,
+          0.0003721739130434783,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.05
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.05
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.04,
+            "half_length": 0.05
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.05
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "left_thigh",
+      "inertial": {
+        "mass": 8.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.2
+        ],
+        "inertia": [
+          0.1678106756756757,
+          0.1678106756756757,
+          0.020037027027027032,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.07,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.07,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "left_shin",
+      "inertial": {
+        "mass": 4.0,
+        "com": [
+          0.0,
+          0.0,
+          -0.2
+        ],
+        "inertia": [
+          0.07128571428571429,
+          0.07128571428571429,
+          0.0048571428571428585,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "left_ankle_tilt",
+      "inertial": {
+        "mass": 0.05,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          1e-05,
+          1e-05,
+          1e-05,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [],
+      "collision": []
+    },
+    {
+      "name": "left_foot",
+      "inertial": {
+        "mass": 1.0,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          0.0011333333333333334,
+          0.004333333333333333,
+          0.004866666666666667,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.11,
+              0.05,
+              0.03
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.11,
+              0.05,
+              0.03
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 1.0,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "right_thigh",
+      "inertial": {
+        "mass": 8.5,
+        "com": [
+          0.0,
+          0.0,
+          -0.2
+        ],
+        "inertia": [
+          0.1678106756756757,
+          0.1678106756756757,
+          0.020037027027027032,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.07,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.07,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "right_shin",
+      "inertial": {
+        "mass": 4.0,
+        "com": [
+          0.0,
+          0.0,
+          -0.2
+        ],
+        "inertia": [
+          0.07128571428571429,
+          0.07128571428571429,
+          0.0048571428571428585,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "capsule",
+          "params": {
+            "radius": 0.05,
+            "half_length": 0.2
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              -0.2
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 0.8,
+            "restitution": 0.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "right_ankle_tilt",
+      "inertial": {
+        "mass": 0.05,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          1e-05,
+          1e-05,
+          1e-05,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [],
+      "collision": []
+    },
+    {
+      "name": "right_foot",
+      "inertial": {
+        "mass": 1.0,
+        "com": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "inertia": [
+          0.0011333333333333334,
+          0.004333333333333333,
+          0.004866666666666667,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "visual": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.11,
+              0.05,
+              0.03
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          }
+        }
+      ],
+      "collision": [
+        {
+          "type": "box",
+          "params": {
+            "half_extents": [
+              0.11,
+              0.05,
+              0.03
+            ]
+          },
+          "transform": {
+            "translation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          },
+          "material": {
+            "friction": 1.0,
+            "restitution": 0.0
+          }
+        }
+      ]
+    }
+  ],
+  "joints": [
+    {
+      "name": "root",
+      "type": "free",
+      "parent_link": "world",
+      "child_link": "pelvis",
+      "anchor_in_parent": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "anchor_in_child": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": null,
+      "dynamics": null,
+      "actuator": null
+    },
+    {
+      "name": "j_lumbar",
+      "type": "spherical",
+      "parent_link": "pelvis",
+      "child_link": "lumbar",
+      "anchor_in_parent": [
+        0,
+        0,
+        0.06
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "swing_x": [
+          -0.3,
+          0.3
+        ],
+        "swing_y": [
+          -0.3,
+          0.3
+        ],
+        "twist_z": [
+          -0.4,
+          0.4
+        ]
+      },
+      "dynamics": {
+        "damping": 1.0,
+        "armature": 0.02,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": [
+          150,
+          150,
+          80
+        ],
+        "max_velocity": 10.0
+      }
+    },
+    {
+      "name": "j_chest",
+      "type": "spherical",
+      "parent_link": "lumbar",
+      "child_link": "chest",
+      "anchor_in_parent": [
+        0,
+        0,
+        0.12
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        -0.11
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "swing_x": [
+          -0.3,
+          0.3
+        ],
+        "swing_y": [
+          -0.3,
+          0.3
+        ],
+        "twist_z": [
+          -0.5,
+          0.5
+        ]
+      },
+      "dynamics": {
+        "damping": 1.0,
+        "armature": 0.02,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": [
+          120,
+          120,
+          60
+        ],
+        "max_velocity": 10.0
+      }
+    },
+    {
+      "name": "j_neck",
+      "type": "spherical",
+      "parent_link": "chest",
+      "child_link": "head",
+      "anchor_in_parent": [
+        0,
+        0,
+        0.11
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "swing_x": [
+          -0.6,
+          0.6
+        ],
+        "swing_y": [
+          -0.6,
+          0.6
+        ],
+        "twist_z": [
+          -0.6,
+          0.6
+        ]
+      },
+      "dynamics": {
+        "damping": 1.0,
+        "armature": 0.02,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": [
+          20,
+          20,
+          15
+        ],
+        "max_velocity": 10.0
+      }
+    },
+    {
+      "name": "j_left_shoulder",
+      "type": "spherical",
+      "parent_link": "chest",
+      "child_link": "left_upper_arm",
+      "anchor_in_parent": [
+        0.18,
+        0,
+        0.09
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "swing_x": [
+          -2.0,
+          2.0
+        ],
+        "swing_y": [
+          -1.5,
+          1.5
+        ],
+        "twist_z": [
+          -1.5,
+          1.5
+        ]
+      },
+      "dynamics": {
+        "damping": 1.0,
+        "armature": 0.02,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": [
+          80,
+          80,
+          40
+        ],
+        "max_velocity": 10.0
+      }
+    },
+    {
+      "name": "j_left_elbow",
+      "type": "revolute",
+      "parent_link": "left_upper_arm",
+      "child_link": "left_lower_arm",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.3
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -2.5,
+          0.0
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.01,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 80.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_left_pronation",
+      "type": "revolute",
+      "parent_link": "left_lower_arm",
+      "child_link": "left_wrist_twist",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.27
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -1.5,
+          1.5
+        ]
+      },
+      "dynamics": {
+        "damping": 0.2,
+        "armature": 0.001,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 15.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_left_wrist_flex",
+      "type": "revolute",
+      "parent_link": "left_wrist_twist",
+      "child_link": "left_hand",
+      "anchor_in_parent": [
+        0,
+        0,
+        0
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -1.0,
+          1.0
+        ]
+      },
+      "dynamics": {
+        "damping": 0.2,
+        "armature": 0.001,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 10.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_right_shoulder",
+      "type": "spherical",
+      "parent_link": "chest",
+      "child_link": "right_upper_arm",
+      "anchor_in_parent": [
+        -0.18,
+        0,
+        0.09
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "swing_x": [
+          -2.0,
+          2.0
+        ],
+        "swing_y": [
+          -1.5,
+          1.5
+        ],
+        "twist_z": [
+          -1.5,
+          1.5
+        ]
+      },
+      "dynamics": {
+        "damping": 1.0,
+        "armature": 0.02,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": [
+          80,
+          80,
+          40
+        ],
+        "max_velocity": 10.0
+      }
+    },
+    {
+      "name": "j_right_elbow",
+      "type": "revolute",
+      "parent_link": "right_upper_arm",
+      "child_link": "right_lower_arm",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.3
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -2.5,
+          0.0
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.01,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 80.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_right_pronation",
+      "type": "revolute",
+      "parent_link": "right_lower_arm",
+      "child_link": "right_wrist_twist",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.27
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -1.5,
+          1.5
+        ]
+      },
+      "dynamics": {
+        "damping": 0.2,
+        "armature": 0.001,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 15.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_right_wrist_flex",
+      "type": "revolute",
+      "parent_link": "right_wrist_twist",
+      "child_link": "right_hand",
+      "anchor_in_parent": [
+        0,
+        0,
+        0
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -1.0,
+          1.0
+        ]
+      },
+      "dynamics": {
+        "damping": 0.2,
+        "armature": 0.001,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 10.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_left_hip",
+      "type": "spherical",
+      "parent_link": "pelvis",
+      "child_link": "left_thigh",
+      "anchor_in_parent": [
+        0.1,
+        0,
+        -0.04
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "swing_x": [
+          -0.7,
+          0.7
+        ],
+        "swing_y": [
+          -0.5,
+          1.7
+        ],
+        "twist_z": [
+          -0.4,
+          0.4
+        ]
+      },
+      "dynamics": {
+        "damping": 1.0,
+        "armature": 0.02,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": [
+          150,
+          200,
+          60
+        ],
+        "max_velocity": 10.0
+      }
+    },
+    {
+      "name": "j_left_knee",
+      "type": "revolute",
+      "parent_link": "left_thigh",
+      "child_link": "left_shin",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.4
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          0.0,
+          2.4
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.01,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 200.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_left_ankle_pitch",
+      "type": "revolute",
+      "parent_link": "left_shin",
+      "child_link": "left_ankle_tilt",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.4
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -0.7,
+          0.7
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.005,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 80.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_left_ankle_roll",
+      "type": "revolute",
+      "parent_link": "left_ankle_tilt",
+      "child_link": "left_foot",
+      "anchor_in_parent": [
+        0,
+        0,
+        0
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0.03
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -0.4,
+          0.4
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.005,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 60.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_right_hip",
+      "type": "spherical",
+      "parent_link": "pelvis",
+      "child_link": "right_thigh",
+      "anchor_in_parent": [
+        -0.1,
+        0,
+        -0.04
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "swing_x": [
+          -0.7,
+          0.7
+        ],
+        "swing_y": [
+          -0.5,
+          1.7
+        ],
+        "twist_z": [
+          -0.4,
+          0.4
+        ]
+      },
+      "dynamics": {
+        "damping": 1.0,
+        "armature": 0.02,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": [
+          150,
+          200,
+          60
+        ],
+        "max_velocity": 10.0
+      }
+    },
+    {
+      "name": "j_right_knee",
+      "type": "revolute",
+      "parent_link": "right_thigh",
+      "child_link": "right_shin",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.4
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          0.0,
+          2.4
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.01,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 200.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_right_ankle_pitch",
+      "type": "revolute",
+      "parent_link": "right_shin",
+      "child_link": "right_ankle_tilt",
+      "anchor_in_parent": [
+        0,
+        0,
+        -0.4
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -0.7,
+          0.7
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.005,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 80.0,
+        "max_velocity": 12.0
+      }
+    },
+    {
+      "name": "j_right_ankle_roll",
+      "type": "revolute",
+      "parent_link": "right_ankle_tilt",
+      "child_link": "right_foot",
+      "anchor_in_parent": [
+        0,
+        0,
+        0
+      ],
+      "anchor_in_child": [
+        0,
+        0,
+        0.03
+      ],
+      "frame_in_parent": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "frame_in_child": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limits": {
+        "position": [
+          -0.4,
+          0.4
+        ]
+      },
+      "dynamics": {
+        "damping": 0.5,
+        "armature": 0.005,
+        "friction": 0.0,
+        "stiffness": 0.0
+      },
+      "actuator": {
+        "type": "torque",
+        "max_force": 60.0,
+        "max_velocity": 12.0
+      }
+    }
+  ],
+  "default_pose": {
+    "root_position": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "root_rotation": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "joint_positions": {
+      "j_lumbar": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "j_chest": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "j_neck": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "j_left_shoulder": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "j_left_elbow": -0.1,
+      "j_left_pronation": 0.0,
+      "j_left_wrist_flex": 0.0,
+      "j_left_hip": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "j_left_knee": 0.05,
+      "j_left_ankle_pitch": 0.0,
+      "j_left_ankle_roll": 0.0,
+      "j_right_shoulder": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "j_right_elbow": -0.1,
+      "j_right_pronation": 0.0,
+      "j_right_wrist_flex": 0.0,
+      "j_right_hip": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "j_right_knee": 0.05,
+      "j_right_ankle_pitch": 0.0,
+      "j_right_ankle_roll": 0.0
+    }
+  }
+}

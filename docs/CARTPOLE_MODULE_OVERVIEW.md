@@ -192,6 +192,7 @@ There is now a first narrow Metal gradient module:
 - `MetalTrainableMLPActorCritic`
 - `runMetalSGDTrainingStep(...)`
 - `runPersistentMetalTrainingLoop(...)`
+- `PolicySamplingMode`
 - `mlp_ppo_per_sample_gradients`
 - `mlp_reduce_per_sample_gradients`
 - `mlp_sgd_update`
@@ -212,6 +213,8 @@ Its current job is to prove that:
 - persistent trainable buffers can be copied directly into rollout policy buffers without reconstructing the model on the host
 - persistent trainable buffers and Adam state can be checkpointed and restored without changing the next Adam update
 - the standalone demo can use persistent GPU Adam while keeping the hybrid CPU-Adam path selectable
+- actor-critic rollouts explicitly declare `deterministic-mean` or seeded `stochastic-gaussian` sampling
+- seeded stochastic Gaussian rollout replay and CPU/GPU rollout-storage parity are validated
 
 ## CPU Training Loop
 
@@ -246,6 +249,13 @@ There is now also a first hybrid training path:
 - standalone demo entrypoint in `train-cartpole-demo/`
 - `TRAIN_BACKEND=persistent-gpu-adam`
 - `TRAIN_BACKEND=hybrid-cpu-adam`
+- `TRAIN_POLICY_SAMPLING=deterministic-mean`
+- `TRAIN_POLICY_SAMPLING=stochastic-gaussian`
+- `TRAIN_POLICY_SEED`
+- `TRAIN_LOG_EVERY`
+- `TRAIN_REPLAY_HORIZON`
+- `TRAIN_REPLAY_ENV`
+- `TRAIN_REPLAY_PATH`
 
 The hybrid path keeps:
 
@@ -261,6 +271,9 @@ The default standalone demo now uses the persistent GPU-Adam path instead:
 - policy/value rollout inference on the GPU
 - PPO gradients, gradient reduction, and Adam updates on the GPU
 - GAE and summary/loss readback still on the host
+- deterministic mean or seeded stochastic Gaussian rollout actions; stochastic actions are clamped to environment bounds before stepping
+- live progress logging from host-side iteration summaries, including elapsed time, ETA, env steps/sec, reward, loss, and parameter delta
+- post-training replay export to a self-contained HTML/Canvas animation generated from saved CartPole observations
 
 Its current job is to prove that:
 
